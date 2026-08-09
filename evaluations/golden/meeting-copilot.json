@@ -1,0 +1,33 @@
+{
+  "name": "meeting-copilot-actions-and-risk",
+  "skill_name": "meeting-copilot",
+  "input": {
+    "customer_id": "acme",
+    "meeting_id": "meeting-golden-1",
+    "occurred_at": "2026-08-08T15:00:00Z",
+    "transcript": "Alex: Our goal is to launch by October.\nPriya: Risk: migration is delayed.\nAlex: We will send the mapping document.\nPriya: Action: follow up with security."
+  },
+  "expected_values": {
+    "customer_id": "acme",
+    "meeting_id": "meeting-golden-1",
+    "sentiment": "negative",
+    "commitments.0.speaker": "Alex",
+    "action_items.0.speaker": "Priya"
+  },
+  "required_output_paths": [
+    "summary.0.text",
+    "customer_goals.0.text",
+    "risks.0.text",
+    "follow_up_email",
+    "crm_notes"
+  ],
+  "forbidden_terms": ["Gainsight", "Globex"],
+  "minimum_citations": 4,
+  "expected_memory_writes": {
+    "meeting": 1,
+    "timeline": 1,
+    "commitment": 2,
+    "risk": 1
+  },
+  "expected_artifacts": ["markdown"]
+}
