@@ -1,0 +1,38 @@
+{
+  "name": "account-brief-grounded-risk",
+  "skill_name": "account-brief",
+  "input": {
+    "customer_id": "acme"
+  },
+  "memory": [
+    {
+      "customer_id": "acme",
+      "kind": "profile",
+      "content": "Reduce regional onboarding time by 25%.",
+      "metadata": {"topic": "business_goal"},
+      "confidence": 1.0
+    },
+    {
+      "customer_id": "acme",
+      "kind": "risk",
+      "content": "The migration may miss the renewal date.",
+      "logical_key": "risk:migration",
+      "confidence": 0.8
+    }
+  ],
+  "expected_values": {
+    "customer_id": "acme",
+    "business_goals.0.text": "Reduce regional onboarding time by 25%.",
+    "risks.0.text": "The migration may miss the renewal date."
+  },
+  "required_output_paths": [
+    "executive_summary",
+    "business_goals.0.text",
+    "risks.0.text",
+    "recommended_next_actions.0"
+  ],
+  "forbidden_terms": ["Globex", "Salesforce"],
+  "minimum_citations": 2,
+  "expected_memory_writes": {"artifact": 1},
+  "expected_artifacts": ["markdown"]
+}

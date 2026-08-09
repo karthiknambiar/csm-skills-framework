@@ -1,0 +1,36 @@
+{
+  "records": [
+    {
+      "id": "acme-goal-1",
+      "kind": "profile",
+      "content": "Reduce regional onboarding time by 25%.",
+      "logical_key": "goal:regional-onboarding",
+      "metadata": {"topic": "business_goal"},
+      "confidence": 1.0
+    },
+    {
+      "id": "acme-risk-1",
+      "kind": "risk",
+      "content": "The migration may miss the renewal date.",
+      "logical_key": "risk:migration",
+      "occurred_at": "2026-08-01T10:00:00Z",
+      "confidence": 0.8
+    },
+    {
+      "id": "acme-commitment-1",
+      "kind": "commitment",
+      "content": "Send the validated migration plan by Friday.",
+      "logical_key": "commitment:migration-plan",
+      "occurred_at": "2026-08-02T10:00:00Z",
+      "confidence": 1.0
+    },
+    {
+      "id": "acme-usage-1",
+      "kind": "product_usage",
+      "content": "Weekly active users increased by 18%.",
+      "logical_key": "usage:weekly-active-users",
+      "occurred_at": "2026-08-03T10:00:00Z",
+      "confidence": 0.95
+    }
+  ]
+}
