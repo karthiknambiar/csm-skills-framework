@@ -266,21 +266,54 @@ def run_skill(
     context: typer.Context,
     name: Annotated[str, typer.Argument(help="Registered skill name.")],
     input_json: Annotated[
-        str,
+        str | None,
         typer.Option("--input", help="Skill input as a JSON object."),
-    ],
+    ] = None,
+    input_file: Annotated[
+        Path | None,
+        typer.Option("--input-file", help="Read skill input from a UTF-8 JSON file."),
+    ] = None,
+    include_artifact_content: Annotated[
+        bool,
+        typer.Option(
+            "--include-artifact-content",
+            help="Include base64-encoded artifact content in JSON output.",
+        ),
+    ] = False,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Write all artifacts to this directory."),
+    ] = None,
 ) -> None:
     """Validate and run a skill with JSON input."""
 
     try:
-        payload = json.loads(input_json)
+        if (input_json is None) == (input_file is None):
+            raise ValueError("provide exactly one of --input or --input-file")
+        raw_input = input_file.read_text(encoding="utf-8") if input_file is not None else input_json
+        payload = json.loads(raw_input)
         if not isinstance(payload, dict):
             raise ValueError("skill input must be a JSON object")
-        result = _runtime(context).runner.run(name, payload)
-    except (json.JSONDecodeError, ValueError, ValidationError, SkillError) as error:
+        artifact_handler = (
+            partial(_deliver_to_directory, output_dir=output_dir)
+            if output_dir is not None
+            else None
+        )
+        result = _runtime(context).runner.run(name, payload, artifact_handler=artifact_handler)
+    except (
+        json.JSONDecodeError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        ValidationError,
+        SkillError,
+    ) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error
-    _emit(result.model_dump(mode="json"))
+    exclude = None
+    if not include_artifact_content:
+        exclude = {"artifacts": {"__all__": {"content"}}}
+    _emit(result.model_dump(mode="json", exclude=exclude))
 
 
 @memory_app.command("inspect")

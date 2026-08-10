@@ -340,6 +340,240 @@ def test_skill_run_returns_nonzero_for_unknown_skill(tmp_path: Path) -> None:
     assert "skill is not registered: unknown" in result.stderr
 
 
+def test_skill_run_reads_input_from_utf8_json_file(tmp_path: Path) -> None:
+    input_file = tmp_path / "skill-input.json"
+    input_file.write_text('{"customer_id":"acme"}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input-file",
+            str(input_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["output"]["customer_id"] == "acme"
+
+
+def test_skill_run_requires_exactly_one_input_source(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "provide exactly one of --input or --input-file" in result.stderr
+
+
+def test_skill_run_rejects_two_input_sources(tmp_path: Path) -> None:
+    input_file = tmp_path / "skill-input.json"
+    input_file.write_text('{"customer_id":"acme"}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input",
+            '{"customer_id":"acme"}',
+            "--input-file",
+            str(input_file),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "provide exactly one of --input or --input-file" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("raw_input", "expected_error"),
+    [
+        ("{not-json", "Expecting property name"),
+        ('["not", "an", "object"]', "skill input must be a JSON object"),
+    ],
+)
+def test_skill_run_rejects_invalid_input_file(
+    tmp_path: Path, raw_input: str, expected_error: str
+) -> None:
+    input_file = tmp_path / "skill-input.json"
+    input_file.write_text(raw_input, encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input-file",
+            str(input_file),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert expected_error in result.stderr
+    assert "Traceback" not in result.output
+
+
+def test_skill_run_reports_unreadable_input_file_without_traceback(
+    tmp_path: Path,
+) -> None:
+    missing_input = tmp_path / "missing.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input-file",
+            str(missing_input),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stderr.startswith("Error:")
+    assert "Traceback" not in result.output
+
+
+def test_skill_run_reports_non_utf8_input_file_without_traceback(
+    tmp_path: Path,
+) -> None:
+    input_file = tmp_path / "skill-input.json"
+    input_file.write_bytes(b"\xff")
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input-file",
+            str(input_file),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stderr.startswith("Error:")
+    assert "Traceback" not in result.output
+
+
+def test_skill_run_omits_artifact_content_by_default(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input",
+            '{"customer_id":"acme"}',
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "content" not in json.loads(result.stdout)["artifacts"][0]
+
+
+def test_skill_run_can_include_artifact_content(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "account-brief",
+            "--input",
+            '{"customer_id":"acme"}',
+            "--include-artifact-content",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "content" in json.loads(result.stdout)["artifacts"][0]
+
+
+def test_skill_run_writes_all_artifacts_to_output_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_stub_office_renderer(monkeypatch)
+    output_dir = tmp_path / "nested" / "artifacts"
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "skill",
+            "run",
+            "qbr",
+            "--input",
+            '{"customer_id":"acme","quarter":"2026-Q3"}',
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    filenames = [artifact["filename"] for artifact in payload["artifacts"]]
+    assert filenames == [
+        "acme-2026-Q3-qbr-v1.pptx",
+        "acme-2026-Q3-qbr-v1.docx",
+    ]
+    assert (output_dir / filenames[0]).read_bytes() == b"rendered:powerpoint"
+    assert (output_dir / filenames[1]).read_bytes() == b"rendered:word"
+
+
+def test_skill_run_delivery_failure_does_not_write_memory(tmp_path: Path) -> None:
+    database = tmp_path / "memory.db"
+    blocked_output_dir = tmp_path / "not-a-directory"
+    blocked_output_dir.write_text("blocked")
+
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(database),
+            "skill",
+            "run",
+            "account-brief",
+            "--input",
+            '{"customer_id":"acme"}',
+            "--output-dir",
+            str(blocked_output_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.stderr.startswith("Error:")
+    assert "Traceback" not in result.output
+    with SQLiteMemoryStore(database) as memory:
+        assert memory.history("acme", "account-brief:last-generated") == []
+
+
 def test_connector_ingest_writes_memory_and_checkpoint(tmp_path: Path) -> None:
     source = tmp_path / "records.json"
     source.write_text('[{"id":"risk-1","kind":"risk","content":"Renewal risk."}]')
