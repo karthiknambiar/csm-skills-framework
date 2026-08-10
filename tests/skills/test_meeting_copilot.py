@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from csaf.core import create_runtime
 from csaf.schemas import MemoryKind, MemoryQuery
+from csaf.skills.builtin.meeting_copilot import MeetingCopilotSkill
 
 TRANSCRIPT = """\
 Alex: Our goal is to launch the regional team by October. We are excited about adoption.
@@ -30,13 +31,23 @@ def test_meeting_copilot_extracts_grounded_structured_outputs() -> None:
         )
 
         assert result.output.customer_goals[0].speaker == "Alex"
-        assert result.output.risks[0].excerpt.startswith("Risk:")
-        assert result.output.blockers[0].speaker == "Priya"
-        assert result.output.commitments[0].text == (
-            "We will send the mapping document on Friday."
+        assert result.output.risks[0].text == (
+            "the data migration is delayed and the team is blocked on API access."
         )
-        assert result.output.action_items[0].text.startswith("Action:")
+        assert result.output.risks[0].excerpt == (
+            "Risk: the data migration is delayed and the team is blocked on API access."
+        )
+        assert result.output.blockers[0].speaker == "Priya"
+        assert result.output.commitments[0].text == ("We will send the mapping document on Friday.")
+        assert result.output.action_items[0].text == "Follow up with security about API access."
+        assert result.output.action_items[0].excerpt == (
+            "Action: follow up with security about API access."
+        )
         assert result.output.product_feedback[0].speaker == "Alex"
+        assert result.output.product_feedback[0].text == ("we would like bulk user provisioning.")
+        assert result.output.product_feedback[0].excerpt == (
+            "Product feedback: we would like bulk user provisioning."
+        )
         assert result.output.competitor_mentions[0].text.endswith("Gainsight.")
         assert result.output.sentiment.value == "mixed"
         assert "Agreed next steps" in result.output.follow_up_email
@@ -66,13 +77,114 @@ def test_meeting_copilot_appends_provenance_to_memory() -> None:
         assert meeting.sources[0].source_id == "meeting-42"
         assert meeting.sources[0].occurred_at == occurred_at
         assert runtime.memory.history("acme", "timeline:meeting:meeting-42")
-        assert any(update.kind is MemoryKind.COMMITMENT for update in result.memory_updates)
+        action_updates = [
+            update for update in result.memory_updates if update.kind is MemoryKind.ACTION_ITEM
+        ]
+        commitment_updates = [
+            update for update in result.memory_updates if update.kind is MemoryKind.COMMITMENT
+        ]
+        assert len(action_updates) == 1
+        assert action_updates[0].content == "Follow up with security about API access."
+        assert action_updates[0].sources[0].excerpt == (
+            "Action: follow up with security about API access."
+        )
+        assert len(commitment_updates) == 1
+        assert commitment_updates[0].content == "We will send the mapping document on Friday."
         assert any(update.kind is MemoryKind.RISK for update in result.memory_updates)
         assert any(update.kind is MemoryKind.FEATURE_REQUEST for update in result.memory_updates)
         risk_updates = [
             update for update in result.memory_updates if update.kind is MemoryKind.RISK
         ]
         assert len({update.content for update in risk_updates}) == len(risk_updates)
+    finally:
+        runtime.memory.close()
+
+
+def test_meeting_copilot_deduplicates_overlapping_risks_and_feedback() -> None:
+    runtime = create_runtime()
+    try:
+        result = runtime.runner.run(
+            "meeting-copilot",
+            {
+                "customer_id": "acme",
+                "meeting_id": "meeting-overlap",
+                "transcript": (
+                    "Priya: Risk: API access is blocked.\n"
+                    "Alex: Feature request: add bulk provisioning.\n"
+                    "Alex: Feature request: add bulk provisioning."
+                ),
+            },
+        )
+
+        risk_updates = [
+            update for update in result.memory_updates if update.kind is MemoryKind.RISK
+        ]
+        feedback_updates = [
+            update for update in result.memory_updates if update.kind is MemoryKind.FEATURE_REQUEST
+        ]
+        assert len(risk_updates) == 1
+        assert risk_updates[0].content == "API access is blocked."
+        assert risk_updates[0].sources[0].excerpt == "Risk: API access is blocked."
+        assert len(feedback_updates) == 1
+        assert feedback_updates[0].content == "add bulk provisioning."
+        assert feedback_updates[0].sources[0].excerpt == ("Feature request: add bulk provisioning.")
+    finally:
+        runtime.memory.close()
+
+
+def test_meeting_copilot_metadata_declares_distinct_action_memory() -> None:
+    assert MeetingCopilotSkill.metadata.version == "1.1.0"
+    assert MemoryKind.ACTION_ITEM in MeetingCopilotSkill.metadata.memory_writes
+    assert MemoryKind.COMMITMENT in MeetingCopilotSkill.metadata.memory_writes
+
+
+def test_meeting_copilot_ignores_label_only_normalized_findings() -> None:
+    runtime = create_runtime()
+    try:
+        result = runtime.runner.run(
+            "meeting-copilot",
+            {
+                "customer_id": "acme",
+                "meeting_id": "meeting-labels",
+                "transcript": (
+                    "Priya: Risk:\n"
+                    "Priya: Risk: migration is delayed.\n"
+                    "Alex: Action:\n"
+                    "Alex: Action: follow up with security.\n"
+                    "Alex: Feature request:\n"
+                    "Alex: Feature request: add bulk provisioning.\n"
+                    "Alex: Product feedback:\n"
+                    "Alex: Product feedback: support regional roles."
+                ),
+            },
+        )
+
+        assert [finding.text for finding in result.output.action_items] == [
+            "Follow up with security."
+        ]
+        assert result.output.action_items[0].excerpt == "Action: follow up with security."
+        assert [finding.text for finding in result.output.risks] == ["migration is delayed."]
+        assert result.output.risks[0].excerpt == "Risk: migration is delayed."
+        assert [finding.text for finding in result.output.product_feedback] == [
+            "add bulk provisioning.",
+            "support regional roles.",
+        ]
+        assert [finding.excerpt for finding in result.output.product_feedback] == [
+            "Feature request: add bulk provisioning.",
+            "Product feedback: support regional roles.",
+        ]
+        category_updates = [
+            update
+            for update in result.memory_updates
+            if update.kind in (MemoryKind.ACTION_ITEM, MemoryKind.RISK, MemoryKind.FEATURE_REQUEST)
+        ]
+        assert [update.kind for update in category_updates] == [
+            MemoryKind.ACTION_ITEM,
+            MemoryKind.RISK,
+            MemoryKind.FEATURE_REQUEST,
+            MemoryKind.FEATURE_REQUEST,
+        ]
+        assert all(update.content.strip() for update in result.memory_updates)
     finally:
         runtime.memory.close()
 

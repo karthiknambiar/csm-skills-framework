@@ -97,12 +97,13 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
     metadata = SkillMetadata(
         name="meeting-copilot",
         description="Analyze a transcript and append grounded meeting intelligence.",
-        version="1.0.0",
+        version="1.1.0",
         required_inputs=("customer_id", "meeting_id", "transcript"),
         optional_inputs=("occurred_at", "attendees"),
         memory_writes=(
             MemoryKind.MEETING,
             MemoryKind.TIMELINE,
+            MemoryKind.ACTION_ITEM,
             MemoryKind.COMMITMENT,
             MemoryKind.RISK,
             MemoryKind.FEATURE_REQUEST,
@@ -126,7 +127,12 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
         utterances = self._utterances(skill_input.transcript)
         summary = tuple(self._finding(item) for item in utterances[:3])
         goals = self._matching(utterances, ("goal", "objective", "need to", "want to"))
-        actions = self._matching(utterances, ("action:", "action item", "todo", "follow up"))
+        actions = self._matching(
+            utterances,
+            ("action:", "action item", "todo", "follow up"),
+            display_prefixes=("action:",),
+            capitalize_after_prefix=True,
+        )
         blockers = self._matching(utterances, ("blocker", "blocked", "cannot", "can't"))
         commitments = self._matching(
             utterances,
@@ -135,6 +141,7 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
         risks = self._matching(
             utterances,
             ("risk", "concern", "delay", "escalat", "at risk"),
+            display_prefixes=("risk:",),
         )
         competitors = self._matching(
             utterances,
@@ -143,6 +150,7 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
         feedback = self._matching(
             utterances,
             ("feedback", "feature request", "wish", "would like", "product request"),
+            display_prefixes=("product feedback:", "feature request:"),
         )
         sentiment = self._sentiment(utterances)
         output = MeetingCopilotOutput(
@@ -190,9 +198,24 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
         return tuple(utterances)
 
     @staticmethod
-    def _finding(utterance: _Utterance) -> MeetingFinding:
+    def _finding(
+        utterance: _Utterance,
+        display_prefixes: tuple[str, ...] = (),
+        *,
+        capitalize_after_prefix: bool = False,
+    ) -> MeetingFinding:
+        text = utterance.text
+        folded = text.casefold()
+        prefix_removed = False
+        for prefix in display_prefixes:
+            if folded.startswith(prefix.casefold()):
+                text = text[len(prefix) :].lstrip()
+                prefix_removed = True
+                break
+        if prefix_removed and capitalize_after_prefix and text:
+            text = text[:1].upper() + text[1:]
         return MeetingFinding(
-            text=utterance.text,
+            text=text,
             excerpt=utterance.text,
             speaker=utterance.speaker,
         )
@@ -202,12 +225,22 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
         cls,
         utterances: tuple[_Utterance, ...],
         indicators: tuple[str, ...],
+        display_prefixes: tuple[str, ...] = (),
+        *,
+        capitalize_after_prefix: bool = False,
     ) -> tuple[MeetingFinding, ...]:
-        return tuple(
-            cls._finding(utterance)
-            for utterance in utterances
-            if any(indicator in utterance.text.casefold() for indicator in indicators)
-        )
+        findings: list[MeetingFinding] = []
+        for utterance in utterances:
+            if not any(indicator in utterance.text.casefold() for indicator in indicators):
+                continue
+            finding = cls._finding(
+                utterance,
+                display_prefixes,
+                capitalize_after_prefix=capitalize_after_prefix,
+            )
+            if finding.text:
+                findings.append(finding)
+        return tuple(findings)
 
     @staticmethod
     def _sentiment(utterances: tuple[_Utterance, ...]) -> MeetingSentiment:
@@ -305,17 +338,18 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
             ),
         ]
         for kind, prefix, findings in (
-            (
-                MemoryKind.COMMITMENT,
-                "commitment",
-                MeetingCopilotSkill._unique(output.commitments + output.action_items),
-            ),
+            (MemoryKind.ACTION_ITEM, "action-item", output.action_items),
+            (MemoryKind.COMMITMENT, "commitment", output.commitments),
             (
                 MemoryKind.RISK,
                 "risk",
                 MeetingCopilotSkill._unique(output.risks + output.blockers),
             ),
-            (MemoryKind.FEATURE_REQUEST, "feature-request", output.product_feedback),
+            (
+                MemoryKind.FEATURE_REQUEST,
+                "feature-request",
+                MeetingCopilotSkill._unique(output.product_feedback),
+            ),
         ):
             records.extend(
                 MemoryRecordCreate(
@@ -337,7 +371,7 @@ class MeetingCopilotSkill(Skill[MeetingCopilotInput, MeetingCopilotOutput]):
         unique: list[MeetingFinding] = []
         seen: set[tuple[str | None, str]] = set()
         for finding in findings:
-            key = (finding.speaker, finding.text.casefold())
+            key = (finding.speaker, finding.excerpt.casefold())
             if key not in seen:
                 seen.add(key)
                 unique.append(finding)

@@ -23,6 +23,7 @@ class MemoryKind(StrEnum):
     TIMELINE = "timeline"
     PRODUCT_USAGE = "product_usage"
     ROADMAP = "roadmap"
+    ACTION_ITEM = "action_item"
     COMMITMENT = "commitment"
     RISK = "risk"
     FEATURE_REQUEST = "feature_request"

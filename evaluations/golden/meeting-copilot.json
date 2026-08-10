@@ -12,7 +12,9 @@
     "meeting_id": "meeting-golden-1",
     "sentiment": "negative",
     "commitments.0.speaker": "Alex",
-    "action_items.0.speaker": "Priya"
+    "action_items.0.speaker": "Priya",
+    "action_items.0.text": "Follow up with security.",
+    "risks.0.text": "migration is delayed."
   },
   "required_output_paths": [
     "summary.0.text",
@@ -26,7 +28,8 @@
   "expected_memory_writes": {
     "meeting": 1,
     "timeline": 1,
-    "commitment": 2,
+    "action_item": 1,
+    "commitment": 1,
     "risk": 1
   },
   "expected_artifacts": ["markdown"]
