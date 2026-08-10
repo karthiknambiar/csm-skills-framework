@@ -20,9 +20,11 @@ from csaf.connectors.errors import ConnectorError
 from csaf.core import Runtime, create_runtime
 from csaf.evaluations import EvaluationRunner, load_golden_cases
 from csaf.evaluations.loader import GoldenDatasetError
+from csaf.office import OfficeCLIDoctor, OfficeCLIError
 from csaf.schemas import MemoryKind, MemoryQuery
 from csaf.skills import Artifact
-from csaf.skills.errors import SkillError
+from csaf.skills.builtin import QBRSkill
+from csaf.skills.errors import SkillError, SkillExecutionError
 
 app = typer.Typer(name="csaf", help="Customer Success Agent Framework CLI.")
 skills_app = typer.Typer(help="Discover available skills.")
@@ -30,12 +32,14 @@ skill_app = typer.Typer(help="Run a reusable skill.")
 memory_app = typer.Typer(help="Inspect Customer Memory.")
 meeting_app = typer.Typer(help="Analyze customer meetings.")
 qbr_app = typer.Typer(help="Generate quarterly business reviews.")
+office_app = typer.Typer(help="Check local OfficeCLI readiness.")
 connector_app = typer.Typer(help="Ingest normalized customer data.")
 app.add_typer(skills_app, name="skills")
 app.add_typer(skill_app, name="skill")
 app.add_typer(memory_app, name="memory")
 app.add_typer(meeting_app, name="meeting")
 app.add_typer(qbr_app, name="qbr")
+app.add_typer(office_app, name="office")
 app.add_typer(connector_app, name="connector")
 
 
@@ -48,10 +52,15 @@ def _emit(value: Any) -> None:
 
 
 def _deliver_to_directory(artifacts: tuple[Artifact, ...], *, output_dir: Path) -> None:
-    destinations = {
-        artifact.filename: output_dir / artifact.filename for artifact in artifacts
-    }
+    destinations = {artifact.filename: output_dir / artifact.filename for artifact in artifacts}
     deliver_artifacts(artifacts, destinations)
+
+
+def _preflight_officecli(runtime: Runtime) -> None:
+    skill = runtime.skills.get("qbr")
+    if not isinstance(skill, QBRSkill):
+        raise SkillExecutionError("registered qbr skill does not support Office preflight")
+    skill.preflight()
 
 
 @app.callback()
@@ -70,6 +79,42 @@ def initialize(
 
     context.obj = {"runtime": create_runtime(database)}
     context.call_on_close(context.obj["runtime"].memory.close)
+
+
+@office_app.command("doctor")
+def office_doctor(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Emit the deterministic diagnostic report as JSON."),
+    ] = False,
+) -> None:
+    """Check whether local OfficeCLI can safely render QBR artifacts."""
+
+    try:
+        report = OfficeCLIDoctor().run()
+    except (OSError, OfficeCLIError) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=2) from error
+
+    if json_output:
+        _emit(report.model_dump(mode="json"))
+    else:
+        for check in report.checks:
+            typer.echo(f"[{check.status.value.upper()}] {check.name}: {check.message}")
+        if not report.ready:
+            typer.echo("\nOfficeCLI installation and update guidance:")
+            typer.echo(
+                "  Windows PowerShell: irm https://raw.githubusercontent.com/"
+                "iOfficeAI/OfficeCLI/main/install.ps1 | iex"
+            )
+            typer.echo(
+                "  macOS/Linux: curl -fsSL https://raw.githubusercontent.com/"
+                "iOfficeAI/OfficeCLI/main/install.sh | sh"
+            )
+            typer.echo("  Project: https://github.com/iOfficeAI/OfficeCLI")
+            typer.echo("CSAF reports these instructions only; it never installs software.")
+    if not report.ready:
+        raise typer.Exit(code=2)
 
 
 @app.command("evaluate")
@@ -184,7 +229,9 @@ def generate_qbr(
     """Create or update a cited QBR through the configured OfficeCLI adapter."""
 
     try:
-        result = _runtime(context).runner.run(
+        runtime = _runtime(context)
+        _preflight_officecli(runtime)
+        result = runtime.runner.run(
             "qbr",
             {
                 "customer_id": customer_id,
@@ -196,7 +243,7 @@ def generate_qbr(
             },
             artifact_handler=partial(_deliver_to_directory, output_dir=output_dir),
         )
-    except (OSError, ValidationError, SkillError) as error:
+    except (OSError, OfficeCLIError, ValidationError, SkillError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error
     _emit(result.model_dump(mode="json", exclude={"artifacts": {"__all__": {"content"}}}))
@@ -299,10 +346,14 @@ def run_skill(
             if output_dir is not None
             else None
         )
-        result = _runtime(context).runner.run(name, payload, artifact_handler=artifact_handler)
+        runtime = _runtime(context)
+        if name == "qbr":
+            _preflight_officecli(runtime)
+        result = runtime.runner.run(name, payload, artifact_handler=artifact_handler)
     except (
         json.JSONDecodeError,
         OSError,
+        OfficeCLIError,
         UnicodeError,
         ValueError,
         ValidationError,

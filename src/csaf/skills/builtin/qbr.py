@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from csaf.office import (
     OfficeArtifactRenderer,
+    OfficeCLIArtifactRenderer,
+    OfficeCLIDoctor,
     OfficeCLIError,
     OfficeFormat,
     OfficeOperation,
@@ -77,7 +79,7 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
     metadata = SkillMetadata(
         name="qbr",
         description="Generate or update a cited quarterly business review.",
-        version="1.0.0",
+        version="1.1.0",
         required_inputs=("customer_id", "quarter"),
         optional_inputs=(
             "powerpoint_template",
@@ -91,6 +93,7 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
             MemoryKind.TIMELINE,
             MemoryKind.PRODUCT_USAGE,
             MemoryKind.ROADMAP,
+            MemoryKind.ACTION_ITEM,
             MemoryKind.COMMITMENT,
             MemoryKind.RISK,
             MemoryKind.FEATURE_REQUEST,
@@ -115,6 +118,12 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
     def __init__(self, renderer: OfficeArtifactRenderer) -> None:
         self._renderer = renderer
 
+    def preflight(self) -> None:
+        """Check the configured local renderer before Customer Memory is read."""
+
+        if isinstance(self._renderer, OfficeCLIArtifactRenderer):
+            OfficeCLIDoctor(self._renderer).preflight()
+
     def execute(
         self,
         skill_input: QBRInput,
@@ -127,6 +136,7 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
             if record.metadata.get("quarter") == skill_input.quarter
         )
         risks = self._evidence(groups[MemoryKind.RISK] + groups[MemoryKind.RENEWAL])
+        actions = self._evidence(groups[MemoryKind.ACTION_ITEM])
         commitments = self._evidence(groups[MemoryKind.COMMITMENT])
         output = QBROutput(
             customer_id=skill_input.customer_id,
@@ -142,7 +152,9 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
             roadmap=self._evidence(groups[MemoryKind.ROADMAP]),
             recommendations=risks,
             goals=self._topic(groups[MemoryKind.PROFILE], "business_goal"),
-            next_quarter_plan=commitments + self._evidence(groups[MemoryKind.SUCCESS_PLAN]),
+            next_quarter_plan=actions
+            + commitments
+            + self._evidence(groups[MemoryKind.SUCCESS_PLAN]),
             powerpoint_operation=self._operation(skill_input.existing_powerpoint),
             word_operation=self._operation(skill_input.existing_word),
         )

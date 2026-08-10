@@ -47,6 +47,11 @@ def seed_qbr_memory(runtime: Runtime) -> None:
         ),
         MemoryRecordCreate(
             customer_id="acme",
+            kind=MemoryKind.ACTION_ITEM,
+            content="Schedule the security review.",
+        ),
+        MemoryRecordCreate(
+            customer_id="acme",
             kind=MemoryKind.COMMITMENT,
             content="Complete migration validation next month.",
         ),
@@ -60,9 +65,7 @@ def test_qbr_generates_cited_powerpoint_and_word_and_versions_memory() -> None:
     try:
         seed_qbr_memory(runtime)
 
-        result = runtime.runner.run(
-            "qbr", {"customer_id": "acme", "quarter": "2026-Q3"}
-        )
+        result = runtime.runner.run("qbr", {"customer_id": "acme", "quarter": "2026-Q3"})
 
         assert result.output.artifact_version == 1
         assert result.output.adoption_trends[0].text.endswith("18%.")
@@ -70,7 +73,11 @@ def test_qbr_generates_cited_powerpoint_and_word_and_versions_memory() -> None:
         assert result.output.business_outcomes[0].text.startswith("Reduce onboarding")
         assert result.output.roadmap[0].memory_record_id
         assert result.output.recommendations[0].text.startswith("The data migration")
-        assert result.output.next_quarter_plan[0].text.startswith("Complete migration")
+        assert [item.text for item in result.output.next_quarter_plan] == [
+            "Schedule the security review.",
+            "Complete migration validation next month.",
+        ]
+        assert runtime.skills.get("qbr").metadata.version == "1.1.0"
         assert [artifact.type.value for artifact in result.artifacts] == [
             "powerpoint",
             "word",
@@ -88,9 +95,7 @@ def test_qbr_updates_existing_artifacts_and_increments_versions(tmp_path: Path) 
     renderer = RecordingRenderer()
     runtime = create_runtime(office_renderer=renderer)
     try:
-        first = runtime.runner.run(
-            "qbr", {"customer_id": "acme", "quarter": "2026-Q3"}
-        )
+        first = runtime.runner.run("qbr", {"customer_id": "acme", "quarter": "2026-Q3"})
         existing_powerpoint = tmp_path / first.artifacts[0].filename
         existing_word = tmp_path / first.artifacts[1].filename
         existing_powerpoint.write_bytes(first.artifacts[0].content)

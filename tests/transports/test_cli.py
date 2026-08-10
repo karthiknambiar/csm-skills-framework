@@ -4,6 +4,7 @@
 
 import importlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,16 @@ from typer.testing import CliRunner
 
 from csaf.cli import app
 from csaf.memory import SQLiteMemoryStore
-from csaf.office import OfficeRenderRequest
+from csaf.office import (
+    DiagnosticCheck,
+    DiagnosticStatus,
+    OfficeCLIArtifactRenderer,
+    OfficeCLIConfig,
+    OfficeCLIDoctor,
+    OfficeCLIError,
+    OfficeDiagnosticReport,
+    OfficeRenderRequest,
+)
 from csaf.schemas import MemoryKind, MemoryQuery, MemoryRecordCreate
 
 runner = CliRunner()
@@ -30,9 +40,7 @@ def use_stub_office_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli_app,
         "create_runtime",
-        lambda database: original_create_runtime(
-            database, office_renderer=StubOfficeRenderer()
-        ),
+        lambda database: original_create_runtime(database, office_renderer=StubOfficeRenderer()),
     )
 
 
@@ -614,3 +622,149 @@ def test_evaluate_writes_passing_regression_report(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert json.loads(result.stdout)["pass_rate"] == 1.0
     assert json.loads(report.read_text())["passed"] is True
+
+
+class StubOfficeDoctor:
+    def run(self) -> OfficeDiagnosticReport:
+        names = ("executable", "version", "powerpoint-smoke", "word-smoke")
+        return OfficeDiagnosticReport(
+            ready=True,
+            checks=tuple(
+                DiagnosticCheck(name=name, status=DiagnosticStatus.PASS, message=f"{name} passed")
+                for name in names
+            ),
+        )
+
+
+def test_office_doctor_emits_deterministic_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+    monkeypatch.setattr(cli_app, "OfficeCLIDoctor", StubOfficeDoctor)
+    result = runner.invoke(
+        app,
+        ["--database", str(tmp_path / "memory.db"), "office", "doctor", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["ready"] is True
+    assert [check["name"] for check in payload["checks"]] == [
+        "executable",
+        "version",
+        "powerpoint-smoke",
+        "word-smoke",
+    ]
+
+
+def test_office_doctor_failure_has_guidance_and_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+
+    class MissingDoctor:
+        def run(self) -> OfficeDiagnosticReport:
+            names = ("version", "powerpoint-smoke", "word-smoke")
+            return OfficeDiagnosticReport(
+                ready=False,
+                checks=(
+                    DiagnosticCheck(
+                        name="executable",
+                        status=DiagnosticStatus.FAIL,
+                        message="OfficeCLI executable was not found: officecli",
+                    ),
+                    *(
+                        DiagnosticCheck(name=name, status=DiagnosticStatus.SKIP, message="skipped")
+                        for name in names
+                    ),
+                ),
+            )
+
+    monkeypatch.setattr(cli_app, "OfficeCLIDoctor", MissingDoctor)
+    result = runner.invoke(
+        app,
+        ["--database", str(tmp_path / "memory.db"), "office", "doctor"],
+    )
+
+    assert result.exit_code == 2
+    assert "OfficeCLI installation" in result.stdout
+    assert "https://github.com/iOfficeAI/OfficeCLI" in result.stdout
+    assert "Traceback" not in result.output
+
+
+def test_qbr_preflight_failure_avoids_memory_and_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+    output_dir = tmp_path / "qbr"
+    database = tmp_path / "memory.db"
+
+    def fail_preflight(_runtime: object) -> None:
+        raise OSError("OfficeCLI 1.0.137 or newer is required")
+
+    monkeypatch.setattr(cli_app, "_preflight_officecli", fail_preflight)
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(database),
+            "qbr",
+            "generate",
+            "acme",
+            "--quarter",
+            "2026-Q3",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "OfficeCLI 1.0.137 or newer" in result.stderr
+    assert not output_dir.exists()
+    with SQLiteMemoryStore(database) as memory:
+        assert memory.search(MemoryQuery(customer_id="acme")) == []
+
+
+def test_office_doctor_json_redacts_spaced_and_unc_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+    private_folder = "Private" + " Folder"
+    windows_path = "C:" + f"\\Users\\Alice\\{private_folder}\\report.pptx"
+    unc_path = "\\\\" + f"server\\share\\{private_folder}\\slides.pptx"
+    posix_path = f"/home/alice/{private_folder}/report.docx"
+    renderer = OfficeCLIArtifactRenderer(OfficeCLIConfig(executable=sys.executable))
+    doctor = OfficeCLIDoctor(renderer)
+    monkeypatch.setattr(renderer, "_version", lambda: (1, 0, 137))
+
+    def fail_render(_request: OfficeRenderRequest) -> bytes:
+        raise OfficeCLIError(
+            f"OfficeCLI validate failed; '{windows_path}'; {unc_path}; {posix_path}; retry"
+        )
+
+    monkeypatch.setattr(renderer, "render", fail_render)
+    monkeypatch.setattr(cli_app, "OfficeCLIDoctor", lambda: doctor)
+    result = runner.invoke(
+        app,
+        ["--database", str(tmp_path / "memory.db"), "office", "doctor", "--json"],
+    )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    messages = [check["message"] for check in payload["checks"]]
+    assert any("OfficeCLI validate failed" in message for message in messages)
+    assert sum(message.count("<redacted-path>") for message in messages) >= 6
+    for sensitive in (
+        windows_path,
+        unc_path,
+        posix_path,
+        private_folder,
+        "server",
+        "share",
+        "report.pptx",
+        "slides.pptx",
+        "report.docx",
+        "Alice",
+        "alice",
+    ):
+        assert sensitive not in result.stdout

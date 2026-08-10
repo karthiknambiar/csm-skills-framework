@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 
 from csaf.office import (
+    DiagnosticStatus,
     OfficeCLIArtifactRenderer,
     OfficeCLIConfig,
+    OfficeCLIDoctor,
     OfficeCLIError,
     OfficeFormat,
     OfficeRenderRequest,
@@ -620,3 +622,231 @@ def test_officecli_adapter_rejects_missing_template(tmp_path: Path) -> None:
                 template_path=tmp_path / "missing.pptx",
             )
         )
+
+
+def test_officecli_doctor_reports_healthy_local_runtime(
+    fake_officecli: tuple[Path, Path],
+) -> None:
+    bridge, _ = fake_officecli
+    report = OfficeCLIDoctor(
+        OfficeCLIConfig(executable=sys.executable, prefix_arguments=(str(bridge),))
+    ).run()
+
+    assert report.ready is True
+    assert [check.name for check in report.checks] == [
+        "executable",
+        "version",
+        "powerpoint-smoke",
+        "word-smoke",
+    ]
+    assert [check.status for check in report.checks] == [DiagnosticStatus.PASS] * 4
+
+
+def test_officecli_doctor_reports_missing_executable_and_skips_remaining_checks() -> None:
+    report = OfficeCLIDoctor(
+        OfficeCLIConfig(executable="officecli-command-that-does-not-exist")
+    ).run()
+
+    assert report.ready is False
+    assert [check.status for check in report.checks] == [
+        DiagnosticStatus.FAIL,
+        DiagnosticStatus.SKIP,
+        DiagnosticStatus.SKIP,
+        DiagnosticStatus.SKIP,
+    ]
+    assert "not found" in report.checks[0].message
+
+
+def test_officecli_doctor_reports_outdated_version_and_skips_smoke_checks(
+    fake_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, _ = fake_officecli
+    monkeypatch.setenv("FAKE_OFFICECLI_VERSION", "OfficeCLI 1.0.136")
+    report = OfficeCLIDoctor(
+        OfficeCLIConfig(executable=sys.executable, prefix_arguments=(str(bridge),))
+    ).run()
+
+    assert report.ready is False
+    assert [check.status for check in report.checks] == [
+        DiagnosticStatus.PASS,
+        DiagnosticStatus.FAIL,
+        DiagnosticStatus.SKIP,
+        DiagnosticStatus.SKIP,
+    ]
+    assert "1.0.137 or newer" in report.checks[1].message
+
+
+def test_officecli_doctor_distinguishes_broken_smoke_render(
+    fake_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, _ = fake_officecli
+    monkeypatch.setenv("FAKE_OFFICECLI_FAIL", "validate")
+    report = OfficeCLIDoctor(
+        OfficeCLIConfig(executable=sys.executable, prefix_arguments=(str(bridge),))
+    ).run()
+
+    assert report.ready is False
+    assert [check.status for check in report.checks] == [
+        DiagnosticStatus.PASS,
+        DiagnosticStatus.PASS,
+        DiagnosticStatus.FAIL,
+        DiagnosticStatus.FAIL,
+    ]
+    assert all("validate" in check.message for check in report.checks[2:])
+
+
+def test_officecli_preflight_only_checks_executable_and_version(
+    fake_officecli: tuple[Path, Path],
+) -> None:
+    bridge, calls_path = fake_officecli
+
+    OfficeCLIDoctor(
+        OfficeCLIConfig(executable=sys.executable, prefix_arguments=(str(bridge),))
+    ).preflight()
+
+    assert [call["arguments"] for call in _calls(calls_path)] == [["--version"]]
+
+
+@pytest.mark.parametrize("error_type", [OfficeCLIError, OSError])
+def test_officecli_doctor_redacts_sensitive_failure_details(
+    fake_officecli: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    bridge, _ = fake_officecli
+    renderer = _renderer(bridge)
+    doctor = OfficeCLIDoctor(renderer)
+    private_folder = "Private" + " Folder"
+    windows_path = "C:" + f"\\Users\\Alice\\{private_folder}\\report.pptx"
+    unc_path = "\\\\" + f"server\\share\\{private_folder}\\slides.pptx"
+    posix_path = f"/home/alice/{private_folder}/report.docx"
+    paths = (
+        f'"{windows_path}"',
+        windows_path,
+        unc_path,
+        f"'{posix_path}'",
+        posix_path,
+    )
+    credential_url = "https://alice:" + "not-for-output@example.test/resource"
+    assignments = (
+        "api_" + "key=" + "not-for-output",
+        "token:" + "not-for-output",
+        "secret=" + "not-for-output",
+        "password=" + "not-for-output",
+        "OPENAI_" + "API_KEY=" + "not-for-output",
+        "ACCESS_" + "TOKEN=" + "not-for-output",
+        "CLIENT_" + "SECRET=" + "not-for-output",
+    )
+    message = (
+        f"OfficeCLI validate failed; inputs={'; '.join(paths[:3])};\r\n"
+        f"OfficeCLI retry paths={paths[3]}, {paths[4]}. "
+        f"source={credential_url}; {'; '.join(assignments)}"
+    )
+
+    def fail_render(_request: OfficeRenderRequest) -> bytes:
+        raise error_type(message)
+
+    monkeypatch.setattr(renderer, "render", fail_render)
+    report = doctor.run()
+    failure_messages = [
+        check.message for check in report.checks if check.status is DiagnosticStatus.FAIL
+    ]
+
+    assert len(failure_messages) == 2
+    assert all("validate" in value for value in failure_messages)
+    assert all("<redacted-path>" in value for value in failure_messages)
+    assert all("<redacted-credential>" in value for value in failure_messages)
+    for category in (
+        "api_key",
+        "token",
+        "secret",
+        "password",
+        "OPENAI_API_KEY",
+        "ACCESS_TOKEN",
+        "CLIENT_SECRET",
+    ):
+        assert all(f"{category}=<redacted-secret>" in value for value in failure_messages)
+    for sensitive in (
+        windows_path,
+        unc_path,
+        posix_path,
+        private_folder,
+        "report.pptx",
+        "slides.pptx",
+        "report.docx",
+        "server",
+        "share",
+        "not-for-output",
+        "Alice",
+        "alice",
+    ):
+        assert all(sensitive not in value for value in failure_messages)
+
+
+def test_officecli_preflight_redacts_failure_before_raising(
+    fake_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, _ = fake_officecli
+    renderer = _renderer(bridge)
+    doctor = OfficeCLIDoctor(renderer)
+    private_folder = "Private" + " Folder"
+    windows_path = "C:" + f"\\Users\\Alice\\{private_folder}\\version.txt"
+    unc_path = "\\\\" + f"server\\share\\{private_folder}\\version.txt"
+    posix_path = f"/home/alice/{private_folder}/version.txt"
+    assignment = "token=" + "not-for-output"
+
+    def fail_version() -> tuple[int, int, int]:
+        raise OfficeCLIError(
+            f"version failed at '{windows_path}'; mirror {unc_path}; log {posix_path}; {assignment}"
+        )
+
+    monkeypatch.setattr(renderer, "_version", fail_version)
+    with pytest.raises(OfficeCLIError) as captured:
+        doctor.preflight()
+
+    message = str(captured.value)
+    assert "version failed" in message
+    assert "<redacted-path>" in message
+    assert "token=<redacted-secret>" in message
+    for sensitive in (
+        windows_path,
+        unc_path,
+        posix_path,
+        private_folder,
+        "server",
+        "share",
+        "version.txt",
+        "Alice",
+        "alice",
+        "not-for-output",
+    ):
+        assert sensitive not in message
+
+
+def test_officecli_doctor_sanitizes_malformed_version_and_skips_smoke(
+    fake_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, _ = fake_officecli
+    private_folder = "Private" + " Folder"
+    windows_path = "C:" + f"\\Users\\Alice\\{private_folder}\\version.txt"
+    assignment = "OPENAI_" + "API_KEY=" + "not-for-output"
+    monkeypatch.setenv(
+        "FAKE_OFFICECLI_VERSION",
+        f"unrecognized version from '{windows_path}'; {assignment}",
+    )
+
+    report = OfficeCLIDoctor(_renderer(bridge)).run()
+
+    assert report.ready is False
+    assert [check.status for check in report.checks] == [
+        DiagnosticStatus.PASS,
+        DiagnosticStatus.FAIL,
+        DiagnosticStatus.SKIP,
+        DiagnosticStatus.SKIP,
+    ]
+    message = report.checks[1].message
+    assert "unrecognized version" in message
+    assert "<redacted-path>" in message
+    assert "OPENAI_API_KEY=<redacted-secret>" in message
+    for sensitive in (windows_path, private_folder, "version.txt", "Alice", "not-for-output"):
+        assert sensitive not in message
