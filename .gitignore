@@ -9,3 +9,10 @@ build/
 dist/
 
 .worktrees/
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
