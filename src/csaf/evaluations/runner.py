@@ -14,6 +14,7 @@ from csaf.evaluations.types import (
     EvaluationReport,
     EvaluationResult,
 )
+from csaf.office import OfficeRenderRequest
 
 _VOLATILE_KEYS = {
     "completed_at",
@@ -26,10 +27,24 @@ _VOLATILE_KEYS = {
 }
 
 
+class _EvaluationOfficeRenderer:
+    """Serialize Office requests locally for deterministic golden evaluations."""
+
+    def render(self, request: OfficeRenderRequest) -> bytes:
+        return request.model_dump_json().encode("utf-8")
+
+
+def _create_evaluation_runtime() -> Runtime:
+    return create_runtime(office_renderer=_EvaluationOfficeRenderer())
+
+
 class EvaluationRunner:
     """Run golden cases in isolated runtimes and calculate regression scores."""
 
-    def __init__(self, runtime_factory: Callable[[], Runtime] = create_runtime) -> None:
+    def __init__(
+        self,
+        runtime_factory: Callable[[], Runtime] = _create_evaluation_runtime,
+    ) -> None:
         self._runtime_factory = runtime_factory
 
     def run(self, cases: tuple[EvaluationCase, ...]) -> EvaluationReport:
@@ -58,25 +73,17 @@ class EvaluationRunner:
             artifact_completeness = self._artifacts(case, first, findings)
             scores = {
                 EvaluationCategory.ACCURACY: self._accuracy(case, output, findings),
-                EvaluationCategory.COMPLETENESS: min(
-                    completeness, artifact_completeness
-                ),
+                EvaluationCategory.COMPLETENESS: min(completeness, artifact_completeness),
                 EvaluationCategory.HALLUCINATION: self._hallucination(case, output, findings),
                 EvaluationCategory.CITATION_QUALITY: self._citations(case, output, findings),
-                EvaluationCategory.CONSISTENCY: self._consistency(
-                    output, second_output, findings
-                ),
-                EvaluationCategory.MEMORY_UPDATES: self._memory_updates(
-                    case, first, findings
-                ),
+                EvaluationCategory.CONSISTENCY: self._consistency(output, second_output, findings),
+                EvaluationCategory.MEMORY_UPDATES: self._memory_updates(case, first, findings),
             }
             thresholds = {
-                category: case.minimum_scores.get(category, 1.0)
-                for category in EvaluationCategory
+                category: case.minimum_scores.get(category, 1.0) for category in EvaluationCategory
             }
             passed = all(
-                scores[category] >= threshold
-                for category, threshold in thresholds.items()
+                scores[category] >= threshold for category, threshold in thresholds.items()
             )
             return EvaluationResult(
                 case_name=case.name,
@@ -167,9 +174,7 @@ class EvaluationRunner:
         output: dict[str, Any],
         findings: list[EvaluationFinding],
     ) -> float:
-        citations = _count_key(output, "memory_record_id") + _count_nonempty_key(
-            output, "excerpt"
-        )
+        citations = _count_key(output, "memory_record_id") + _count_nonempty_key(output, "excerpt")
         score = min(citations / case.minimum_citations, 1.0) if case.minimum_citations else 1.0
         findings.append(
             EvaluationFinding(
@@ -272,11 +277,7 @@ def _count_nonempty_key(value: Any, key: str) -> int:
 
 def _canonical(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            key: _canonical(item)
-            for key, item in value.items()
-            if key not in _VOLATILE_KEYS
-        }
+        return {key: _canonical(item) for key, item in value.items() if key not in _VOLATILE_KEYS}
     if isinstance(value, list):
         return [_canonical(item) for item in value]
     return value

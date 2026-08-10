@@ -7,7 +7,9 @@ import pytest
 
 from csaf.evaluations import EvaluationRunner, load_golden_cases
 from csaf.evaluations.loader import GoldenDatasetError
+from csaf.evaluations.runner import _EvaluationOfficeRenderer
 from csaf.evaluations.types import EvaluationCategory
+from csaf.office import OfficeFormat, OfficeRenderRequest, OfficeSection
 
 
 def test_bundled_golden_dataset_passes_all_regressions() -> None:
@@ -15,18 +17,50 @@ def test_bundled_golden_dataset_passes_all_regressions() -> None:
 
     report = EvaluationRunner().run(cases)
 
-    assert [case.name for case in cases] == [
-        "account-brief-grounded-risk",
-        "meeting-copilot-actions-and-risk",
+    assert [case.skill_name for case in cases] == [
+        "account-brief",
+        "meeting-copilot",
+        "qbr",
     ]
     assert report.passed is True
-    assert report.cases_passed == report.cases_total == 2
+    assert report.cases_passed == report.cases_total == 3
     assert report.pass_rate == 1.0
-    assert all(
-        score == 1.0
-        for result in report.results
-        for score in result.scores.values()
+    assert all(score == 1.0 for result in report.results for score in result.scores.values())
+
+
+def test_evaluation_renderer_serializes_the_office_request() -> None:
+    request = OfficeRenderRequest(
+        format=OfficeFormat.POWERPOINT,
+        title="Acme QBR",
+        sections=(
+            OfficeSection(
+                title="Goals",
+                bullets=("Expand regional adoption.",),
+                citations=("memory:goal-1",),
+            ),
+        ),
     )
+
+    rendered = _EvaluationOfficeRenderer().render(request)
+
+    assert rendered == request.model_dump_json().encode("utf-8")
+
+
+def test_bundled_evaluation_does_not_invoke_officecli_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_preflight(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("evaluation must not invoke OfficeCLI preflight")
+
+    monkeypatch.setattr(
+        "csaf.office.OfficeCLIDoctor.preflight",
+        fail_preflight,
+    )
+
+    report = EvaluationRunner().run(load_golden_cases("evaluations/golden"))
+
+    assert report.passed is True
+    assert report.cases_total == 3
 
 
 def test_runner_reports_actionable_accuracy_regression(tmp_path: Path) -> None:
@@ -61,7 +95,7 @@ def test_case_can_set_a_partial_regression_threshold(tmp_path: Path) -> None:
                 "input": {"customer_id": "acme"},
                 "expected_values": {
                     "customer_id": "acme",
-                    "executive_summary": "intentionally different"
+                    "executive_summary": "intentionally different",
                 },
                 "minimum_scores": {"accuracy": 0.5},
                 "expected_memory_writes": {"artifact": 1},

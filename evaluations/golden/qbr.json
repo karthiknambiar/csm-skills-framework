@@ -1,0 +1,69 @@
+{
+  "name": "qbr-grounded-office-artifacts",
+  "skill_name": "qbr",
+  "input": {
+    "customer_id": "acme",
+    "quarter": "2026-Q3"
+  },
+  "memory": [
+    {
+      "customer_id": "acme",
+      "kind": "profile",
+      "content": "Expand adoption to the regional operations team.",
+      "metadata": {"topic": "business_goal"},
+      "confidence": 1.0
+    },
+    {
+      "customer_id": "acme",
+      "kind": "product_usage",
+      "content": "Weekly active users increased by 18%.",
+      "confidence": 0.9
+    },
+    {
+      "customer_id": "acme",
+      "kind": "risk",
+      "content": "The security review may delay regional rollout.",
+      "confidence": 0.8
+    },
+    {
+      "customer_id": "acme",
+      "kind": "action_item",
+      "content": "Schedule the regional administrator workshop.",
+      "confidence": 1.0
+    },
+    {
+      "customer_id": "acme",
+      "kind": "commitment",
+      "content": "Send the security evidence package.",
+      "confidence": 1.0
+    }
+  ],
+  "expected_values": {
+    "customer_id": "acme",
+    "quarter": "2026-Q3",
+    "artifact_version": 1,
+    "executive_summary": "acme 2026-Q3 review is grounded in 5 current memory records, with 1 risks and 1 active commitments.",
+    "adoption_trends.0.text": "Weekly active users increased by 18%.",
+    "recommendations.0.text": "The security review may delay regional rollout.",
+    "goals.0.text": "Expand adoption to the regional operations team.",
+    "next_quarter_plan.0.text": "Schedule the regional administrator workshop.",
+    "next_quarter_plan.1.text": "Send the security evidence package.",
+    "powerpoint_operation": "create",
+    "word_operation": "create"
+  },
+  "required_output_paths": [
+    "executive_summary",
+    "adoption_trends.0.memory_record_id",
+    "recommendations.0.memory_record_id",
+    "goals.0.memory_record_id",
+    "next_quarter_plan.0.memory_record_id",
+    "next_quarter_plan.1.memory_record_id"
+  ],
+  "forbidden_terms": ["Globex", "Salesforce"],
+  "minimum_citations": 5,
+  "expected_memory_writes": {
+    "qbr": 1,
+    "artifact": 2
+  },
+  "expected_artifacts": ["powerpoint", "word"]
+}
