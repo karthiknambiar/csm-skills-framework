@@ -5,6 +5,7 @@ from csaf.skills.registry import SkillRegistry
 from csaf.skills.runner import SkillRunner
 from csaf.skills.types import (
     Artifact,
+    ArtifactHandler,
     ArtifactType,
     SkillMetadata,
     SkillResultDraft,
@@ -13,6 +14,7 @@ from csaf.skills.types import (
 
 __all__ = [
     "Artifact",
+    "ArtifactHandler",
     "ArtifactType",
     "Skill",
     "SkillContext",

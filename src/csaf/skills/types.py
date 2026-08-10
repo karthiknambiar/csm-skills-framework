@@ -1,5 +1,6 @@
 """Validated contracts shared by skill authors and callers."""
 
+from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Generic, TypeVar
@@ -37,6 +38,9 @@ class Artifact(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     media_type: str = Field(min_length=1, max_length=200)
     content: bytes
+
+
+ArtifactHandler = Callable[[tuple[Artifact, ...]], None]
 
 
 class SkillMetadata(BaseModel):

@@ -1,7 +1,10 @@
 """Contract tests and authoring example for the Skills SDK."""
 
+from collections.abc import Callable
+
 from pydantic import BaseModel, ConfigDict, Field
 
+import csaf.skills as skills
 from csaf.memory import SQLiteMemoryStore
 from csaf.schemas import MemoryKind, MemoryRecordCreate
 from csaf.skills import (
@@ -15,6 +18,10 @@ from csaf.skills import (
     SkillRunner,
 )
 from csaf.skills.errors import DuplicateSkillError, SkillContractError, SkillNotFoundError
+
+
+def test_skills_exports_artifact_handler_contract() -> None:
+    assert skills.ArtifactHandler == Callable[[tuple[Artifact, ...]], None]
 
 
 class RiskDigestInput(BaseModel):
@@ -93,9 +100,14 @@ def test_runner_executes_full_declared_lifecycle() -> None:
         )
         registry = SkillRegistry()
         registry.register(RiskDigestSkill())
+        delivered: list[tuple[Artifact, ...]] = []
+
+        artifact_handler = delivered.append
 
         result = SkillRunner(registry, memory).run(
-            "risk-digest", {"customer_id": "acme"}
+            "risk-digest",
+            {"customer_id": "acme"},
+            artifact_handler=artifact_handler,
         )
 
         assert result.skill_name == "risk-digest"
@@ -103,7 +115,31 @@ def test_runner_executes_full_declared_lifecycle() -> None:
         assert result.model_dump()["output"]["count"] == 1
         assert result.memory_updates[0].revision == 1
         assert result.artifacts[0].filename == "risk-digest.md"
+        assert delivered == [result.artifacts]
         assert len(memory.history("acme", "skill:risk-digest")) == 1
+
+
+def test_runner_does_not_commit_memory_when_artifact_delivery_fails() -> None:
+    with SQLiteMemoryStore() as memory:
+        registry = SkillRegistry()
+        registry.register(RiskDigestSkill())
+
+        def fail_delivery(artifacts: tuple[Artifact, ...]) -> None:
+            assert artifacts[0].filename == "risk-digest.md"
+            raise OSError("artifact destination unavailable")
+
+        try:
+            SkillRunner(registry, memory).run(
+                "risk-digest",
+                {"customer_id": "acme"},
+                artifact_handler=fail_delivery,
+            )
+        except OSError as error:
+            assert str(error) == "artifact destination unavailable"
+        else:
+            raise AssertionError("artifact delivery failure should propagate")
+
+        assert memory.history("acme", "skill:risk-digest") == []
 
 
 def test_registry_rejects_duplicates_and_reports_unknown_skills() -> None:

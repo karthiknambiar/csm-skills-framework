@@ -12,7 +12,7 @@ from csaf.schemas import MemoryQuery
 from csaf.skills.base import SkillContext
 from csaf.skills.errors import SkillContractError
 from csaf.skills.registry import SkillRegistry
-from csaf.skills.types import SkillResultDraft, SkillRunResult
+from csaf.skills.types import ArtifactHandler, SkillResultDraft, SkillRunResult
 
 
 class SkillRunner:
@@ -22,7 +22,13 @@ class SkillRunner:
         self._registry = registry
         self._memory = memory
 
-    def run(self, name: str, raw_input: BaseModel | Mapping[str, Any]) -> SkillRunResult[Any]:
+    def run(
+        self,
+        name: str,
+        raw_input: BaseModel | Mapping[str, Any],
+        *,
+        artifact_handler: ArtifactHandler | None = None,
+    ) -> SkillRunResult[Any]:
         """Run a registered skill through the standard lifecycle."""
 
         skill = self._registry.get(name)
@@ -65,6 +71,8 @@ class SkillRunner:
             raise SkillContractError(f"invalid output from skill {name}: {error}") from error
 
         self._validate_effects(name, customer_id, draft)
+        if artifact_handler is not None:
+            artifact_handler(draft.artifacts)
         updates = tuple(self._memory.append(update) for update in draft.memory_updates)
         return SkillRunResult[Any](
             execution_id=execution_id,
