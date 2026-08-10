@@ -1,12 +1,14 @@
 """Typer command-line interface for CSAF."""
 
 import json
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from pydantic import ValidationError
 
+from csaf.cli.artifacts import deliver_artifacts
 from csaf.connectors import (
     ConnectorCheckpoint,
     ConnectorIngestor,
@@ -19,6 +21,7 @@ from csaf.core import Runtime, create_runtime
 from csaf.evaluations import EvaluationRunner, load_golden_cases
 from csaf.evaluations.loader import GoldenDatasetError
 from csaf.schemas import MemoryKind, MemoryQuery
+from csaf.skills import Artifact
 from csaf.skills.errors import SkillError
 
 app = typer.Typer(name="csaf", help="Customer Success Agent Framework CLI.")
@@ -42,6 +45,13 @@ def _runtime(context: typer.Context) -> Runtime:
 
 def _emit(value: Any) -> None:
     typer.echo(json.dumps(value, indent=2, sort_keys=True, default=str))
+
+
+def _deliver_to_directory(artifacts: tuple[Artifact, ...], *, output_dir: Path) -> None:
+    destinations = {
+        artifact.filename: output_dir / artifact.filename for artifact in artifacts
+    }
+    deliver_artifacts(artifacts, destinations)
 
 
 @app.callback()
@@ -107,15 +117,16 @@ def account_brief(
     """Generate a grounded Account Brief for a customer."""
 
     try:
+        artifact_filename = f"{customer_id}-account-brief.md"
+        destinations = {artifact_filename: output} if output is not None else {}
         result = _runtime(context).runner.run(
             "account-brief",
             {"customer_id": customer_id, "time_window_days": days},
+            artifact_handler=partial(deliver_artifacts, destinations=destinations),
         )
-    except (ValidationError, SkillError) as error:
+    except (OSError, ValidationError, SkillError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error
-    if output is not None:
-        output.write_bytes(result.artifacts[0].content)
     _emit(result.model_dump(mode="json"))
 
 
@@ -138,6 +149,8 @@ def analyze_meeting(
 
     try:
         transcript_text = transcript.read_text(encoding="utf-8")
+        artifact_filename = f"{meeting_id}-meeting-analysis.md"
+        destinations = {artifact_filename: output} if output is not None else {}
         result = _runtime(context).runner.run(
             "meeting-copilot",
             {
@@ -146,12 +159,11 @@ def analyze_meeting(
                 "transcript": transcript_text,
                 "attendees": attendee or (),
             },
+            artifact_handler=partial(deliver_artifacts, destinations=destinations),
         )
     except (OSError, UnicodeError, ValidationError, SkillError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error
-    if output is not None:
-        output.write_bytes(result.artifacts[0].content)
     _emit(result.model_dump(mode="json"))
 
 
@@ -172,7 +184,6 @@ def generate_qbr(
     """Create or update a cited QBR through the configured OfficeCLI adapter."""
 
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
         result = _runtime(context).runner.run(
             "qbr",
             {
@@ -183,9 +194,8 @@ def generate_qbr(
                 "existing_powerpoint": existing_powerpoint,
                 "existing_word": existing_word,
             },
+            artifact_handler=partial(_deliver_to_directory, output_dir=output_dir),
         )
-        for artifact in result.artifacts:
-            (output_dir / artifact.filename).write_bytes(artifact.content)
     except (OSError, ValidationError, SkillError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error
