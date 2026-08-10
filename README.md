@@ -46,17 +46,19 @@ sample inputs are available under [`examples/`](examples/README.md).
 
 ## Development
 
-CSAF requires Python 3.11 or newer.
+CSAF requires Python 3.11 or newer. Install the development extra into an
+isolated environment; it includes test, lint, and package-build tooling:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-pytest
+uv pip install --python .venv/bin/python -e '.[dev]'
+.venv/bin/python -m pytest
+.venv/bin/python -m build
 ```
 
-Optional dependency groups will be introduced alongside the functionality that
-needs them, keeping the initial scaffold small and installable.
+Windows PowerShell users can replace `.venv/bin/python` with
+`.\.venv\Scripts\python.exe`. See [Contributing](CONTRIBUTING.md) for the full
+verification and secret-scanning workflow.
 
 ## Customer Memory quick start
 
@@ -191,8 +193,12 @@ csaf qbr generate acme --quarter 2026-Q3 \
   --output-dir artifacts/
 ```
 
-OfficeCLI is an external runtime prerequisite. The default command contract and
-configuration options are documented in the
+QBR artifacts require fully local, deterministic
+[`iOfficeAI/OfficeCLI`](https://github.com/iOfficeAI/OfficeCLI) 1.0.137 or newer.
+CSAF never installs it, calls a hosted model, or asks for an API key. Verify the
+local executable and temporary PPTX/DOCX smoke renders with `csaf office doctor`;
+automation can use `csaf office doctor --json`. Installation, supported command
+flow, and migration guidance are in the
 [OfficeCLI integration guide](docs/officecli.md).
 
 ## Connector framework

@@ -26,6 +26,18 @@ Unknown skills return `404`, invalid skill contracts return `422`, and provider
 execution failures such as OfficeCLI errors return `502`. FastAPI handles request
 schema validation with its standard `422` response.
 
-The development API does not implement authentication or authorization. Do not
-expose it publicly until an application adds identity, customer-level access
-control, request limits, audit logging, and production storage configuration.
+## Deployment security boundary
+
+CSAF deliberately has no built-in API authentication requirement. Authentication,
+authorization, tenant-to-customer access control, request limits, audit logging,
+TLS termination, and production storage policy are the host application's
+responsibility. This keeps the reusable framework independent of one identity or
+deployment provider; it does not make the development API safe for public use.
+
+Do not expose this API to an untrusted network or the public internet directly.
+A production host application must enforce identity and customer-level access
+before requests reach CSAF, restrict `/docs` and memory-inspection routes as
+appropriate, apply request and artifact size limits, and record security-relevant
+audit events. Keep SQLite and generated artifacts on access-controlled storage.
+CSAF does not require or validate an API key for this boundary; adding a shared
+key to examples would not replace proper host-owned authorization.

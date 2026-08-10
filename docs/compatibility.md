@@ -35,3 +35,31 @@ may require immediate removal or behavior changes.
 Community extensions should declare the CSAF versions they test against and run
 contract/conformance tests in CI. Vendor-specific payloads must not become shared
 domain contracts merely to preserve an adapter implementation.
+## Hardening-release migrations
+
+### Meeting actions and commitments
+
+Meeting Copilot 1.1.0 stores explicit tasks in the new `action_item` memory kind
+and reserves `commitment` for promises. During migration, consumers that
+previously treated every commitment as a task should read both `action_item` and
+`commitment`, present them separately, and stop creating task records from
+commitments once historical data has been reconciled. This enum and skill
+metadata update is a pre-1.0 minor contract change.
+
+### OfficeCLI configuration
+
+The default renderer now targets fully local `iOfficeAI/OfficeCLI` 1.0.137 or
+newer. The old configurable `create_arguments` and `update_arguments`
+argument-template fields are deprecated and are not accepted by the selected
+default `OfficeCLIArtifactRenderer`. Remove those fields and use
+`OfficeCLIConfig` for the executable, test-only prefix arguments, timeout, and
+minimum version. A host that needs another command surface can continue to
+implement and inject any `OfficeArtifactRenderer`; vendor-specific command
+templates do not belong in the default adapter.
+### Test client dependency
+
+The development extra uses the `httpx2>=2,<3` distribution for Starlette's
+TestClient compatibility and warning-free API tests. Development environments
+created from an earlier CSAF preview should reinstall `.[dev]` so the old
+`httpx` test-only distribution is replaced. This does not change CSAF's runtime
+HTTP API or add an HTTP client runtime dependency.
