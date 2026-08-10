@@ -18,21 +18,66 @@
       "content": "The migration may miss the renewal date.",
       "logical_key": "risk:migration",
       "confidence": 0.8
+    },
+    {
+      "customer_id": "acme",
+      "kind": "action_item",
+      "content": "Follow up with security."
+    },
+    {
+      "customer_id": "acme",
+      "kind": "feature_request",
+      "content": "Bulk provisioning requested."
+    },
+    {
+      "customer_id": "acme",
+      "kind": "commitment",
+      "content": "Send the security response."
+    },
+    {
+      "customer_id": "acme",
+      "kind": "stakeholder",
+      "content": "Priya owns the renewal."
+    },
+    {
+      "customer_id": "acme",
+      "kind": "meeting",
+      "content": "Raw meeting summary.",
+      "metadata": {"meeting_id": "meeting-golden-1"},
+      "occurred_at": "2026-08-10T09:00:00Z"
+    },
+    {
+      "customer_id": "acme",
+      "kind": "timeline",
+      "content": "Meeting analyzed: concise summary.",
+      "metadata": {"meeting_id": "meeting-golden-1"},
+      "occurred_at": "2026-08-10T09:00:00Z"
     }
   ],
   "expected_values": {
     "customer_id": "acme",
     "business_goals.0.text": "Reduce regional onboarding time by 25%.",
-    "risks.0.text": "The migration may miss the renewal date."
+    "risks.0.text": "The migration may miss the renewal date.",
+    "action_items.0.text": "Follow up with security.",
+    "product_feedback.0.text": "Bulk provisioning requested.",
+    "opportunities": [],
+    "recent_activity.0.text": "Meeting analyzed: concise summary.",
+    "recent_activity.1.text": null,
+    "recommended_next_actions.1": "Complete the action item: Follow up with security.",
+    "recommended_next_actions.2": null,
+    "executive_summary": "acme has 8 relevant memory records, including 1 risk, 1 commitment, and 1 stakeholder."
   },
   "required_output_paths": [
     "executive_summary",
     "business_goals.0.text",
     "risks.0.text",
+    "action_items.0.text",
+    "product_feedback.0.text",
+    "recent_activity.0.text",
     "recommended_next_actions.0"
   ],
   "forbidden_terms": ["Globex", "Salesforce"],
-  "minimum_citations": 2,
+  "minimum_citations": 7,
   "expected_memory_writes": {"artifact": 1},
   "expected_artifacts": ["markdown"]
 }

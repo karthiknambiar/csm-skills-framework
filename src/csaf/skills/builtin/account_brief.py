@@ -48,7 +48,9 @@ class AccountBriefOutput(BaseModel):
     technical_environment: tuple[Evidence, ...] = ()
     stakeholders: tuple[Evidence, ...] = ()
     risks: tuple[Evidence, ...] = ()
+    action_items: tuple[Evidence, ...] = ()
     opportunities: tuple[Evidence, ...] = ()
+    product_feedback: tuple[Evidence, ...] = ()
     commitments: tuple[Evidence, ...] = ()
     adoption: tuple[Evidence, ...] = ()
     renewal_status: tuple[Evidence, ...] = ()
@@ -62,7 +64,7 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
     metadata = SkillMetadata(
         name="account-brief",
         description="Generate a citation-first overview of a customer account.",
-        version="1.0.0",
+        version="1.1.0",
         required_inputs=("customer_id",),
         optional_inputs=("time_window_days",),
         memory_reads=(
@@ -72,6 +74,7 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
             MemoryKind.SUPPORT,
             MemoryKind.TIMELINE,
             MemoryKind.PRODUCT_USAGE,
+            MemoryKind.ACTION_ITEM,
             MemoryKind.COMMITMENT,
             MemoryKind.RISK,
             MemoryKind.FEATURE_REQUEST,
@@ -112,21 +115,13 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
             technical_environment=self._topic(groups[MemoryKind.PROFILE], "technical_environment"),
             stakeholders=self._evidence(groups[MemoryKind.STAKEHOLDER]),
             risks=self._evidence(groups[MemoryKind.RISK]),
-            opportunities=self._evidence(groups[MemoryKind.FEATURE_REQUEST]),
+            action_items=self._evidence(groups[MemoryKind.ACTION_ITEM]),
+            opportunities=(),
+            product_feedback=self._evidence(groups[MemoryKind.FEATURE_REQUEST]),
             commitments=self._evidence(groups[MemoryKind.COMMITMENT]),
-            adoption=self._evidence(
-                groups[MemoryKind.PRODUCT_USAGE] + groups[MemoryKind.HEALTH]
-            ),
+            adoption=self._evidence(groups[MemoryKind.PRODUCT_USAGE] + groups[MemoryKind.HEALTH]),
             renewal_status=self._evidence(groups[MemoryKind.RENEWAL]),
-            recent_activity=self._evidence(
-                sorted(
-                    groups[MemoryKind.MEETING]
-                    + groups[MemoryKind.SUPPORT]
-                    + groups[MemoryKind.TIMELINE],
-                    key=lambda record: record.occurred_at or record.created_at,
-                    reverse=True,
-                )[:10]
-            ),
+            recent_activity=self._evidence(self._recent_activity(groups)),
             recommended_next_actions=self._next_actions(groups),
         )
         markdown = self._render_markdown(output)
@@ -167,9 +162,7 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
             return records
         since = generated_at - timedelta(days=days)
         return tuple(
-            record
-            for record in records
-            if (record.occurred_at or record.created_at) >= since
+            record for record in records if (record.occurred_at or record.created_at) >= since
         )
 
     @staticmethod
@@ -205,22 +198,63 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
         total = sum(len(records) for records in groups.values())
         if total == 0:
             return f"No Customer Memory is available for {customer_id}."
+        risks = len(groups[MemoryKind.RISK])
+        commitments = len(groups[MemoryKind.COMMITMENT])
+        stakeholders = len(groups[MemoryKind.STAKEHOLDER])
         return (
-            f"{customer_id} has {total} relevant memory records, including "
-            f"{len(groups[MemoryKind.RISK])} risks, "
-            f"{len(groups[MemoryKind.COMMITMENT])} commitments, and "
-            f"{len(groups[MemoryKind.STAKEHOLDER])} stakeholders."
+            f"{customer_id} has {total} relevant memory "
+            f"{'record' if total == 1 else 'records'}, including "
+            f"{risks} {'risk' if risks == 1 else 'risks'}, "
+            f"{commitments} {'commitment' if commitments == 1 else 'commitments'}, "
+            f"and {stakeholders} "
+            f"{'stakeholder' if stakeholders == 1 else 'stakeholders'}."
         )
+
+    @staticmethod
+    def _recent_activity(
+        groups: dict[MemoryKind, list[MemoryRecord]],
+    ) -> list[MemoryRecord]:
+        records = groups[MemoryKind.MEETING] + groups[MemoryKind.TIMELINE]
+        selected = list(groups[MemoryKind.SUPPORT])
+        by_meeting_id: dict[str, int] = {}
+        for record in records:
+            meeting_id = record.metadata.get("meeting_id")
+            if not isinstance(meeting_id, str) or not meeting_id:
+                selected.append(record)
+                continue
+            existing_index = by_meeting_id.get(meeting_id)
+            if existing_index is None:
+                by_meeting_id[meeting_id] = len(selected)
+                selected.append(record)
+            elif (
+                record.kind is MemoryKind.TIMELINE
+                and selected[existing_index].kind is not MemoryKind.TIMELINE
+            ):
+                selected[existing_index] = record
+        return sorted(
+            selected,
+            key=lambda record: record.occurred_at or record.created_at,
+            reverse=True,
+        )[:10]
+
+    @staticmethod
+    def _without_prefix(text: str, *prefixes: str) -> str:
+        for prefix in prefixes:
+            if text.casefold().startswith(prefix.casefold()):
+                return text[len(prefix) :].lstrip()
+        return text
 
     @staticmethod
     def _next_actions(groups: dict[MemoryKind, list[MemoryRecord]]) -> tuple[str, ...]:
         actions = [
-            f"Review and assign the risk: {record.content}"
+            "Review and assign the risk: "
+            f"{AccountBriefSkill._without_prefix(record.content, 'risk:')}"
             for record in groups[MemoryKind.RISK]
         ]
         actions.extend(
-            f"Confirm ownership and due date: {record.content}"
-            for record in groups[MemoryKind.COMMITMENT]
+            "Complete the action item: "
+            f"{AccountBriefSkill._without_prefix(record.content, 'action item:', 'action:')}"
+            for record in groups[MemoryKind.ACTION_ITEM]
         )
         if not actions:
             actions.append("Validate customer goals and capture the next agreed action.")
@@ -242,7 +276,9 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
             ("Technical environment", brief.technical_environment),
             ("Stakeholders", brief.stakeholders),
             ("Risks", brief.risks),
+            ("Action Items", brief.action_items),
             ("Opportunities", brief.opportunities),
+            ("Product Feedback", brief.product_feedback),
             ("Commitments", brief.commitments),
             ("Adoption", brief.adoption),
             ("Renewal status", brief.renewal_status),
@@ -250,9 +286,7 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
         )
         for heading, evidence in sections:
             lines.extend(("", f"## {heading}", ""))
-            lines.extend(
-                f"- {item.text} `memory:{item.memory_record_id}`" for item in evidence
-            )
+            lines.extend(f"- {item.text} `memory:{item.memory_record_id}`" for item in evidence)
             if not evidence:
                 lines.append("- No grounded information available.")
         lines.extend(("", "## Recommended next actions", ""))
