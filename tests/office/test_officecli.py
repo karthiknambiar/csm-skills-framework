@@ -36,6 +36,7 @@ command = arguments[0]
 record = {
     "arguments": arguments,
     "flush": os.environ.get("OFFICECLI_RESIDENT_FLUSH"),
+    "skip_update": os.environ.get("OFFICECLI_SKIP_UPDATE"),
 }
 with pathlib.Path(os.environ["FAKE_OFFICECLI_CALLS"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(record) + "\\n")
@@ -1201,3 +1202,35 @@ def test_officecli_error_redacts_complete_or_truncated_private_key(
     assert message == "OfficeCLI failed:\n<redacted-secret>"
     assert body not in message
     assert footer not in message
+
+
+def test_default_config_reads_csaf_officecli(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CSAF_OFFICECLI", "private-officecli")
+
+    assert OfficeCLIConfig().executable == "private-officecli"
+
+
+def test_explicit_officecli_executable_wins_over_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CSAF_OFFICECLI", "environment-officecli")
+
+    assert OfficeCLIConfig(executable="explicit-officecli").executable == "explicit-officecli"
+
+
+def test_every_officecli_subprocess_disables_updates(
+    fake_officecli: tuple[Path, Path],
+) -> None:
+    bridge, calls_path = fake_officecli
+
+    OfficeCLIDoctor(
+        OfficeCLIConfig(executable=sys.executable, prefix_arguments=(str(bridge),))
+    ).preflight()
+
+    assert _calls(calls_path) == [
+        {
+            "arguments": ["--version"],
+            "flush": "each",
+            "skip_update": "1",
+        }
+    ]

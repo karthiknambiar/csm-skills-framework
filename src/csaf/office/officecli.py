@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import warnings
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ _LEGACY_UPDATE_ARGUMENTS = (
 class OfficeCLIConfig:
     """Configuration for the selected command surface and legacy 0.1.x templates."""
 
-    executable: str = "officecli"
+    executable: str = field(default_factory=lambda: os.environ.get("CSAF_OFFICECLI", "officecli"))
     create_arguments: tuple[str, ...] | None = None
     update_arguments: tuple[str, ...] | None = None
     timeout_seconds: float = 120.0
@@ -221,6 +221,7 @@ class OfficeCLIArtifactRenderer:
     def _execute(self, command: list[str], operation: str) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["OFFICECLI_RESIDENT_FLUSH"] = "each"
+        environment["OFFICECLI_SKIP_UPDATE"] = "1"
         try:
             with tempfile.TemporaryFile() as stdout_stream:
                 with tempfile.TemporaryFile() as stderr_stream:
