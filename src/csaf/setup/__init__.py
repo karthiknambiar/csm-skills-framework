@@ -1,5 +1,12 @@
 """Public contracts for CSAF native setup."""
 
+from csaf.setup.adapters import (
+    AdapterInstaller,
+    AdapterInstallResult,
+    ClaudeAdapterInstaller,
+    CodexAdapterInstaller,
+    install_adapters,
+)
 from csaf.setup.assets import (
     AssetLimits,
     SetupError,
@@ -25,6 +32,11 @@ from csaf.setup.types import (
 )
 
 __all__ = [
+    "AdapterInstaller",
+    "AdapterInstallResult",
+    "ClaudeAdapterInstaller",
+    "CodexAdapterInstaller",
+    "install_adapters",
     "AssetLimits",
     "AssistantKind",
     "codex_skill_root",
