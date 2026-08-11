@@ -17,3 +17,28 @@ LLM provider or SaaS service and do not leave a database behind.
 - `ingest_json.py` imports the canonical JSON fixture and prints retained memory.
 
 See the full [tutorial](../docs/tutorial.md) for the equivalent CLI workflow.
+
+## PowerShell-friendly skill input
+
+For generic skill execution, put the input in a UTF-8 JSON file instead of
+escaping JSON at the PowerShell prompt:
+
+```powershell
+csaf --database tutorial.db skill run account-brief `
+  --input-file examples/data/account-brief-input.json
+```
+
+Artifact bytes are omitted from the JSON response by default. Add
+`--include-artifact-content` only when a downstream tool needs them, or use
+`--output-dir generated` to write every artifact safely to a directory.
+
+QBR output requires the local deterministic OfficeCLI. Check it before running
+QBR:
+
+```powershell
+csaf office doctor
+csaf office doctor --json
+```
+
+The doctor reports installation and compatibility guidance; it never installs
+software, contacts a hosted AI service, or asks for an API key.
