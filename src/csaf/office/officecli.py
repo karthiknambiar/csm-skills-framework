@@ -12,11 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from csaf.office.redaction import redact_officecli_message
 from csaf.office.types import OfficeFormat, OfficeOperation, OfficeRenderRequest
 
 
 class OfficeCLIError(RuntimeError):
     """Raised when OfficeCLI is unavailable or cannot render a document."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(redact_officecli_message(message))
 
 
 _LEGACY_CREATE_ARGUMENTS = (

@@ -17,7 +17,11 @@ def deliver_artifacts(
     staged: list[tuple[Path, Path]] = []
     try:
         for artifact in artifacts:
-            if Path(artifact.filename).name != artifact.filename:
+            if (
+                "/" in artifact.filename
+                or "\\" in artifact.filename
+                or Path(artifact.filename).name != artifact.filename
+            ):
                 raise OSError(f"unsafe artifact filename: {artifact.filename}")
             destination = destinations.get(artifact.filename)
             if destination is None:

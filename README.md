@@ -100,7 +100,8 @@ Pydantic input and output models. `SkillRunner` owns the standard lifecycle:
 2. Retrieve the declared Customer Memory categories.
 3. Execute the skill with an isolated `SkillContext`.
 4. Validate structured output and declared effects.
-5. Append memory updates and return artifacts in a `SkillRunResult`.
+5. Deliver artifacts before appending memory updates.
+6. Append memory updates and return a `SkillRunResult`.
 
 The runner prevents undeclared memory writes and artifacts as well as writes to
 a customer other than the one in the input. A complete minimal authoring example
@@ -156,8 +157,8 @@ curl -X POST http://localhost:8000/skills/account-brief \
 Meeting Copilot analyzes a speaker-labeled transcript into grounded summaries,
 goals, actions, blockers, commitments, risks, sentiment, competitor mentions,
 and product feedback. It also returns a follow-up email and CRM notes, produces a
-Markdown analysis, and appends meeting, timeline, commitment, risk, and feature
-request records with transcript provenance.
+Markdown analysis, and appends `meeting`, `timeline`, `action_item`, `commitment`,
+`risk`, and `feature_request` records with transcript provenance.
 
 ```bash
 csaf meeting analyze transcript.md \
@@ -222,7 +223,7 @@ authoring contract, canonical formats, pagination rules, and conformance tests.
 
 Golden cases seed isolated Customer Memory, execute a skill twice, and score
 accuracy, completeness, hallucination checks, citations, consistency, and memory
-effects. The bundled Account Brief and Meeting Copilot regressions run in CI:
+effects. The bundled Account Brief, Meeting Copilot, and QBR regressions run in CI:
 
 ```bash
 csaf evaluate evaluations/golden --report evaluation-report.json

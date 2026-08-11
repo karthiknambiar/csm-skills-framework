@@ -5,7 +5,7 @@
 import importlib
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -191,6 +191,26 @@ def test_deliver_artifacts_rejects_unsafe_unselected_filename(tmp_path: Path) ->
 
     with pytest.raises(OSError, match="unsafe artifact filename"):
         deliver_artifacts((artifact,), {})
+
+
+def test_deliver_artifacts_rejects_backslash_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csaf.cli import artifacts as artifact_delivery
+    from csaf.skills import Artifact, ArtifactType
+
+    monkeypatch.setattr(artifact_delivery, "Path", PurePosixPath)
+    artifact = Artifact(
+        type=ArtifactType.MARKDOWN,
+        filename=r"nested\escape.md",
+        media_type="text/markdown",
+        content=b"unsafe",
+    )
+
+    with pytest.raises(OSError, match="unsafe artifact filename"):
+        artifact_delivery.deliver_artifacts((artifact,), {})
+
+    assert not (tmp_path / "escape.md").exists()
 
 
 def test_deliver_artifacts_cleans_temp_file_after_staging_failure(
@@ -723,6 +743,52 @@ def test_qbr_preflight_failure_avoids_memory_and_artifacts(
     assert not output_dir.exists()
     with SQLiteMemoryStore(database) as memory:
         assert memory.search(MemoryQuery(customer_id="acme")) == []
+
+
+def test_qbr_renderer_failure_redacts_standalone_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+    original_create_runtime = cli_app.create_runtime
+    provider_key = "sk" + "-" + "A" * 32
+    private_key_body = "QUJD" + "REVGR0hJSktMTU5PUFFSU1RVVldYWVo="
+    private_key = (
+        "-----BEGIN "
+        + "PRIVATE KEY-----\\n"
+        + private_key_body
+        + "\\n-----END "
+        + "PRIVATE KEY-----"
+    )
+
+    class FailingRenderer:
+        def render(self, request: OfficeRenderRequest) -> bytes:
+            raise OfficeCLIError(f"render failed: {provider_key}\\n{private_key}")
+
+    monkeypatch.setattr(
+        cli_app,
+        "create_runtime",
+        lambda database: original_create_runtime(database, office_renderer=FailingRenderer()),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "--database",
+            str(tmp_path / "memory.db"),
+            "qbr",
+            "generate",
+            "acme",
+            "--quarter",
+            "2026-Q3",
+            "--output-dir",
+            str(tmp_path / "qbr"),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "<redacted-secret>" in result.stderr
+    assert provider_key not in result.output
+    assert private_key_body not in result.output
+    assert "END PRIVATE KEY" not in result.output
 
 
 def test_office_doctor_json_redacts_spaced_and_unc_paths(

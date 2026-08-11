@@ -141,10 +141,15 @@ def test_invalid_skill_input_maps_to_unprocessable_entity() -> None:
         runtime.memory.close()
 
 
-def test_office_renderer_failure_maps_to_bad_gateway() -> None:
+def test_office_renderer_failure_maps_to_redacted_bad_gateway() -> None:
+    secret_name = "OPENAI" + "_API_KEY"
+    assigned_value = "sensitive" + "-value"
+    provider_key = "sk" + "-" + "A" * 32
+    source_path = "C:" + r"\Users\Alice\My Documents\qbr.pptx"
+
     class FailingRenderer:
         def render(self, request: object) -> bytes:
-            raise OfficeCLIError("dummy renderer unavailable")
+            raise OfficeCLIError(f'"{source_path}" {secret_name}={assigned_value} {provider_key}')
 
     runtime = create_runtime(office_renderer=FailingRenderer())
     try:
@@ -155,8 +160,13 @@ def test_office_renderer_failure_maps_to_bad_gateway() -> None:
             )
 
         assert response.status_code == 502
-        assert response.json() == {
-            "detail": "QBR artifact rendering failed: dummy renderer unavailable"
-        }
+        detail = response.json()["detail"]
+        assert detail == (
+            "QBR artifact rendering failed: "
+            "<redacted-path> OPENAI_API_KEY=<redacted-secret> <redacted-secret>"
+        )
+        assert source_path not in detail
+        assert assigned_value not in detail
+        assert provider_key not in detail
     finally:
         runtime.memory.close()

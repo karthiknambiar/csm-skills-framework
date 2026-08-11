@@ -160,3 +160,15 @@ def test_legacy_officecli_migration_is_documented_as_temporarily_functional() ->
     assert "update_arguments" in combined
     assert "officeartifactrenderer" in combined
     assert "inject" in combined
+
+
+def test_readme_matches_runtime_lifecycle_and_bundled_evaluations() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    meeting = readme.split("## Meeting Copilot", maxsplit=1)[1].split(
+        "## QBR generation", maxsplit=1
+    )[0]
+
+    assert "Deliver artifacts before appending memory updates." in readme
+    assert "`action_item`" in meeting
+    assert "`feature_request`" in meeting
+    assert "Account Brief, Meeting Copilot, and QBR regressions" in readme

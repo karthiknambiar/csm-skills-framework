@@ -1,6 +1,5 @@
 """Local OfficeCLI readiness diagnostics for deterministic QBR rendering."""
 
-import re
 import shutil
 from enum import StrEnum
 from pathlib import Path
@@ -12,40 +11,8 @@ from csaf.office.officecli import (
     OfficeCLIConfig,
     OfficeCLIError,
 )
+from csaf.office.redaction import redact_officecli_message
 from csaf.office.types import OfficeFormat, OfficeRenderRequest, OfficeSection
-
-_CREDENTIAL_URL = re.compile(r"(?i)\bhttps?://[^/\s:@]+:[^@\s/]+@")
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b((?:[a-z0-9]+[_-])*(?:api[_-]?key|access[_-]?token|"
-    r"client[_-]?secret|token|secret|password))\s*[:=]\s*"
-    r"(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|[^\s,;]+)"
-)
-_DOUBLE_QUOTED_PATH = re.compile(r'"(?:[a-zA-Z]:[\\/]|\\\\|/)[^"\r\n]*"')
-_SINGLE_QUOTED_PATH = re.compile(r"'(?:[a-zA-Z]:[\\/]|\\\\|/)[^'\r\n]*'")
-_ABSOLUTE_FILE_PATH = re.compile(
-    r"(?i)(?<![\w:/\\])(?:[a-z]:[\\/]|\\\\|/)[^\r\n,;\"']*?"
-    r"\.[a-z0-9]{1,12}(?=$|[\s,;:.!?)\]}])"
-)
-_SIMPLE_WINDOWS_PATH = re.compile(r"(?i)(?<!\w)[a-z]:[\\/][^\s,;:\"'<>|]+")
-_SIMPLE_UNC_PATH = re.compile(r"(?<![\\\w])\\\\[^\s,;:\"'<>|]+(?:\\[^\s,;:\"'<>|]+)+")
-_SIMPLE_POSIX_PATH = re.compile(r"(?<![:/\w])/(?:[^/\s,;:\"'<>|]+/)*[^/\s,;:\"'<>|]+")
-
-
-def _redact_diagnostic(message: str) -> str:
-    """Remove local paths and credential-shaped values from diagnostic text."""
-
-    redacted = _CREDENTIAL_URL.sub("<redacted-credential>", message)
-    redacted = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted-secret>", redacted)
-    for path_pattern in (
-        _DOUBLE_QUOTED_PATH,
-        _SINGLE_QUOTED_PATH,
-        _ABSOLUTE_FILE_PATH,
-        _SIMPLE_WINDOWS_PATH,
-        _SIMPLE_UNC_PATH,
-        _SIMPLE_POSIX_PATH,
-    ):
-        redacted = path_pattern.sub("<redacted-path>", redacted)
-    return redacted
 
 
 class DiagnosticStatus(StrEnum):
@@ -100,7 +67,7 @@ class OfficeCLIDoctor:
         try:
             self._renderer._version()
         except (OSError, OfficeCLIError) as error:
-            raise OfficeCLIError(_redact_diagnostic(str(error))) from error
+            raise OfficeCLIError(redact_officecli_message(str(error))) from error
 
     def run(self) -> OfficeDiagnosticReport:
         """Run ordered executable, version, PPTX, and DOCX checks."""
@@ -140,7 +107,9 @@ class OfficeCLIDoctor:
             return DiagnosticCheck(
                 name="executable",
                 status=DiagnosticStatus.FAIL,
-                message=_redact_diagnostic(f"OfficeCLI executable was not found: {executable}"),
+                message=redact_officecli_message(
+                    f"OfficeCLI executable was not found: {executable}"
+                ),
             )
         return DiagnosticCheck(
             name="executable",
@@ -172,7 +141,7 @@ class OfficeCLIDoctor:
         return DiagnosticCheck(
             name=name,
             status=DiagnosticStatus.FAIL,
-            message=_redact_diagnostic(str(error)),
+            message=redact_officecli_message(str(error)),
         )
 
     @staticmethod

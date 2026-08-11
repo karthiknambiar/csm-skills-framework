@@ -498,7 +498,7 @@ def test_officecli_adapter_preserves_official_validation_diagnostics(
 
     with pytest.raises(
         OfficeCLIError,
-        match=r"Package.*broken relationship.*/ppt/slides/slide1\.xml.*slide1",
+        match=r"Package.*broken relationship.*<redacted-path>.*slide1",
     ):
         _renderer(bridge).render(_request())
 
@@ -545,7 +545,7 @@ def test_officecli_adapter_preserves_raw_utf8_diagnostics(
 
     with pytest.raises(
         OfficeCLIError,
-        match="Contenu.*déploiement 東京.*/word/document.xml.*résumé",
+        match="Contenu.*déploiement 東京.*<redacted-path>.*résumé",
     ):
         _renderer(bridge).render(_request())
 
@@ -1162,3 +1162,42 @@ def test_empty_legacy_template_does_not_fall_back_to_old_default(
         OfficeCLIArtifactRenderer(config).render(_request())
 
     assert _legacy_calls(calls_path) == [[]]
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "sk" + "-" + "A" * 32,
+        "gh" + "p_" + "A" * 24,
+        "github" + "_pat_" + "A" * 82,
+        "AK" + "IA" + "A" * 16,
+        "AI" + "za" + "A" * 35,
+        "xo" + "xb-" + "A" * 20,
+        "sk" + "_live_" + "A" * 24,
+        "rk" + "_test_" + "A" * 24,
+        "-----BEGIN " + "PRIVATE KEY-----",
+    ],
+)
+def test_officecli_error_redacts_standalone_credential_shapes(credential: str) -> None:
+    message = str(OfficeCLIError(f"OfficeCLI failed: {credential}"))
+
+    assert credential not in message
+    assert "<redacted-secret>" in message
+
+
+@pytest.mark.parametrize("include_footer", [True, False])
+def test_officecli_error_redacts_complete_or_truncated_private_key(
+    include_footer: bool,
+) -> None:
+    body = "QUJD" + "REVGR0hJSktMTU5PUFFSU1RVVldYWVo="
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    footer = "-----END " + "PRIVATE KEY-----"
+    private_key = f"{header}\n{body}"
+    if include_footer:
+        private_key += f"\n{footer}"
+
+    message = str(OfficeCLIError(f"OfficeCLI failed:\n{private_key}"))
+
+    assert message == "OfficeCLI failed:\n<redacted-secret>"
+    assert body not in message
+    assert footer not in message
