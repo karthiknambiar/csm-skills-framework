@@ -22,6 +22,7 @@ from csaf.evaluations import EvaluationRunner, load_golden_cases
 from csaf.evaluations.loader import GoldenDatasetError
 from csaf.office import OfficeCLIDoctor, OfficeCLIError
 from csaf.schemas import MemoryKind, MemoryQuery
+from csaf.setup.cli import setup_app
 from csaf.skills import Artifact
 from csaf.skills.builtin import QBRSkill
 from csaf.skills.errors import SkillError, SkillExecutionError
@@ -41,6 +42,7 @@ app.add_typer(meeting_app, name="meeting")
 app.add_typer(qbr_app, name="qbr")
 app.add_typer(office_app, name="office")
 app.add_typer(connector_app, name="connector")
+app.add_typer(setup_app, name="setup")
 
 
 def _runtime(context: typer.Context) -> Runtime:
@@ -77,6 +79,9 @@ def initialize(
 ) -> None:
     """Configure a local CSAF runtime for this invocation."""
 
+    if context.invoked_subcommand == "setup":
+        context.obj = {}
+        return
     context.obj = {"runtime": create_runtime(database)}
     context.call_on_close(context.obj["runtime"].memory.close)
 

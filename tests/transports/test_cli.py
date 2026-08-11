@@ -44,6 +44,47 @@ def use_stub_office_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_setup_commands_are_registered_without_initializing_customer_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+    database = tmp_path / "must-not-exist.db"
+
+    def unexpected_runtime(_database: Path) -> object:
+        raise AssertionError("setup command initialized Customer Memory")
+
+    monkeypatch.setattr(cli_app, "create_runtime", unexpected_runtime)
+
+    result = runner.invoke(
+        app,
+        ["--database", str(database), "setup", "uninstall"],
+        input="n\n",
+    )
+
+    assert result.exit_code == 2
+    assert not database.exists()
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["install", "doctor", "repair", "check-update", "update", "uninstall"],
+)
+def test_setup_lifecycle_help_is_available_without_runtime(
+    command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli_app = importlib.import_module("csaf.cli.app")
+    monkeypatch.setattr(
+        cli_app,
+        "create_runtime",
+        lambda _database: pytest.fail("setup help initialized Customer Memory"),
+    )
+
+    result = runner.invoke(app, ["setup", command, "--help"])
+
+    assert result.exit_code == 0
+
+
 def test_skills_list_returns_json(tmp_path: Path) -> None:
     database = tmp_path / "memory.db"
 
