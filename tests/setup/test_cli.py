@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import os
@@ -11,6 +12,7 @@ import sys
 import threading
 import time
 import unicodedata
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +24,7 @@ from typer.testing import CliRunner
 
 from csaf.setup.assets import SetupError
 from csaf.setup.manager import SetupResult, SetupStatus
+from csaf.setup.paths import current_platform
 from csaf.setup.types import (
     AssistantKind,
     InstallState,
@@ -903,11 +906,49 @@ def test_update_cache_releases_lock_after_fetch_failure(tmp_path: Path) -> None:
     assert recovered.check(Version("0.1.0")).available is True
 
 
+def _runtime_bundle(
+    tmp_path: Path,
+    *,
+    platform: str | None = None,
+    version: str = "0.1.0",
+    extra_member: tuple[str, bytes] | None = None,
+) -> Path:
+    runtime = b"dummy csaf wheel"
+    dependency = b"dummy dependency wheel"
+    runtime_hash = hashlib.sha256(runtime).hexdigest()
+    dependency_hash = hashlib.sha256(dependency).hexdigest()
+    requirements = (
+        f"./csaf-runtime.whl --hash=sha256:{runtime_hash}\n"
+        f"dummy-dependency==1.0.0 --hash=sha256:{dependency_hash}\n"
+    ).encode()
+    members = {
+        "csaf-runtime.whl": runtime,
+        "requirements.lock": requirements,
+        "wheelhouse/dummy_dependency-1.0.0-py3-none-any.whl": dependency,
+    }
+    manifest = {
+        "schema_version": 1,
+        "version": version,
+        "platform": platform or current_platform().value,
+        "files": {
+            name: {"sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
+            for name, content in members.items()
+        },
+    }
+    bundle = tmp_path / "runtime-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("runtime-bundle.json", json.dumps(manifest))
+        for name, content in members.items():
+            archive.writestr(name, content)
+        if extra_member is not None:
+            archive.writestr(*extra_member)
+    return bundle
+
+
 def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) -> None:
     from csaf.setup import cli
 
-    wheel = tmp_path / "runtime.whl"
-    wheel.write_bytes(b"verified by manager")
+    wheel = _runtime_bundle(tmp_path)
     uv = tmp_path / "bin" / ("uv.exe" if os.name == "nt" else "uv")
     uv.parent.mkdir()
     uv.write_bytes(b"uv")
@@ -931,6 +972,7 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
         uv_path=uv,
         launcher_path=launcher,
         python_executable=Path(sys.executable),
+        expected_version=Version("0.1.0"),
         runner=run,
     )
 
@@ -943,11 +985,14 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
         str(Path(sys.executable)),
         "--target",
         str(destination),
-        "--no-deps",
         "--offline",
         "--no-config",
-        "--",
-        str(wheel),
+        "--no-index",
+        "--require-hashes",
+        "--find-links",
+        str(destination.parent / ".runtime-bundle" / "wheelhouse"),
+        "--requirement",
+        str(destination.parent / ".runtime-bundle" / "requirements.lock"),
     ]
     assert calls[0][1]["shell"] is False
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
@@ -955,6 +1000,78 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
     assert calls[0][1]["env"]["UV_PYTHON_INSTALL_DIR"] == str(tmp_path / "python")
     assert calls[0][1]["env"]["UV_CACHE_DIR"] == str(tmp_path / "cache" / "uv")
     assert (destination / ("csaf.exe" if os.name == "nt" else "csaf")).read_bytes() == b"launcher"
+
+
+def test_runtime_installer_rejects_inner_version_mismatch_before_process(tmp_path: Path) -> None:
+    from csaf.setup import cli
+
+    bundle = _runtime_bundle(tmp_path, version="9.9.9")
+    uv = tmp_path / "uv.exe"
+    uv.write_bytes(b"uv")
+    launcher = tmp_path / "csaf.exe"
+    launcher.write_bytes(b"launcher")
+    called = False
+
+    def run(*_args: Any, **_kwargs: Any) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("process must not start")
+
+    with pytest.raises(SetupError, match="version"):
+        cli._install_runtime(
+            bundle,
+            tmp_path / "runtime",
+            uv_path=uv,
+            launcher_path=launcher,
+            python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
+            runner=run,
+        )
+
+    assert called is False
+
+
+def test_runtime_installer_rejects_bare_wheel_before_process(tmp_path: Path) -> None:
+    from csaf.setup import cli
+
+    bare = tmp_path / "runtime.whl"
+    bare.write_bytes(b"not a bundle")
+    uv = tmp_path / "uv.exe"
+    uv.write_bytes(b"uv")
+    launcher = tmp_path / "csaf.exe"
+    launcher.write_bytes(b"launcher")
+
+    with pytest.raises(SetupError, match="runtime bundle"):
+        cli._install_runtime(
+            bare,
+            tmp_path / "runtime",
+            uv_path=uv,
+            launcher_path=launcher,
+            python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
+            runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()),
+        )
+
+
+def test_runtime_installer_rejects_extra_bundle_member(tmp_path: Path) -> None:
+    from csaf.setup import cli
+
+    bundle = _runtime_bundle(tmp_path, extra_member=("unexpected.txt", b"surprise"))
+    uv = tmp_path / "uv.exe"
+    uv.write_bytes(b"uv")
+    launcher = tmp_path / "csaf.exe"
+    launcher.write_bytes(b"launcher")
+
+    with pytest.raises(SetupError, match="runtime bundle"):
+        cli._install_runtime(
+            bundle,
+            tmp_path / "runtime",
+            uv_path=uv,
+            launcher_path=launcher,
+            python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
+            runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()),
+        )
 
 
 def test_runtime_installer_rejects_missing_private_uv_before_process(tmp_path: Path) -> None:
@@ -978,6 +1095,7 @@ def test_runtime_installer_rejects_missing_private_uv_before_process(tmp_path: P
             uv_path=tmp_path / "missing-uv",
             launcher_path=launcher,
             python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
             runner=run,
         )
 
@@ -989,8 +1107,7 @@ def test_runtime_installer_translates_process_failure_without_output(
 ) -> None:
     from csaf.setup import cli
 
-    wheel = tmp_path / "runtime.whl"
-    wheel.write_bytes(b"verified")
+    wheel = _runtime_bundle(tmp_path)
     uv = tmp_path / ("uv.exe" if os.name == "nt" else "uv")
     uv.write_bytes(b"uv")
     launcher = tmp_path / ("csaf.exe" if os.name == "nt" else "csaf")
@@ -1008,6 +1125,7 @@ def test_runtime_installer_translates_process_failure_without_output(
             uv_path=uv,
             launcher_path=launcher,
             python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
             runner=run,
         )
 
@@ -1038,8 +1156,7 @@ def test_make_manager_injects_production_runtime_installer(monkeypatch: pytest.M
 def test_runtime_installer_rejects_incomplete_install(tmp_path: Path) -> None:
     from csaf.setup import cli
 
-    wheel = tmp_path / "runtime.whl"
-    wheel.write_bytes(b"verified")
+    wheel = _runtime_bundle(tmp_path)
     uv = tmp_path / ("uv.exe" if os.name == "nt" else "uv")
     uv.write_bytes(b"uv")
     launcher = tmp_path / ("csaf.exe" if os.name == "nt" else "csaf")
@@ -1057,6 +1174,7 @@ def test_runtime_installer_rejects_incomplete_install(tmp_path: Path) -> None:
             uv_path=uv,
             launcher_path=launcher,
             python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
             runner=run,
         )
 
@@ -1064,8 +1182,7 @@ def test_runtime_installer_rejects_incomplete_install(tmp_path: Path) -> None:
 def test_runtime_installer_translates_timeout(tmp_path: Path) -> None:
     from csaf.setup import cli
 
-    wheel = tmp_path / "runtime.whl"
-    wheel.write_bytes(b"verified")
+    wheel = _runtime_bundle(tmp_path)
     uv = tmp_path / ("uv.exe" if os.name == "nt" else "uv")
     uv.write_bytes(b"uv")
     launcher = tmp_path / ("csaf.exe" if os.name == "nt" else "csaf")
@@ -1081,6 +1198,7 @@ def test_runtime_installer_translates_timeout(tmp_path: Path) -> None:
             uv_path=uv,
             launcher_path=launcher,
             python_executable=Path(sys.executable),
+            expected_version=Version("0.1.0"),
             runner=run,
         )
 
@@ -1127,7 +1245,7 @@ def test_production_runtime_installer_fails_actionably_without_bootstrap(
     installer = cli._runtime_installer(tmp_path / "CSAF")
 
     with pytest.raises(SetupError, match="rerun the CSAF installer"):
-        installer(wheel, tmp_path / "transaction" / "runtime")
+        installer(wheel, tmp_path / "transaction" / "runtime", Version("0.1.0"))
 
 
 def _assert_display_has_no_terminal_controls(output: str, *payloads: str) -> None:

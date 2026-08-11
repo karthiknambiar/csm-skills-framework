@@ -46,6 +46,14 @@ def default_data_root(
     system_name = (system if system is not None else platform.system()).casefold()
     user_home = Path.home() if home is None else Path(home)
     environment = os.environ if environ is None else environ
+    configured_root = environment.get("CSAF_DATA_ROOT")
+    if configured_root:
+        root = Path(configured_root)
+        if not root.is_absolute():
+            raise ValueError("CSAF_DATA_ROOT must be absolute")
+        if root == Path(root.anchor):
+            raise ValueError("CSAF_DATA_ROOT must not be a filesystem root")
+        return root
     if system_name == "windows":
         base = (
             Path(environment["LOCALAPPDATA"])

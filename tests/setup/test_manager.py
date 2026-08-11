@@ -22,6 +22,7 @@ from csaf.setup import (
     ReleaseManifest,
     SetupError,
     SupportedPlatform,
+    Version,
 )
 from csaf.setup.manager import (
     ClaudeManagedAdapter,
@@ -75,6 +76,7 @@ class Harness:
         self.fail: str | None = None
         self.doctor_ready = True
         self.writer_calls = 0
+        self.runtime_versions: list[Version] = []
 
     def download(self, asset: object, destination: Path) -> Path:
         self.effects.append(("download", asset))
@@ -94,8 +96,9 @@ class Harness:
         destination.write_bytes(payload)
         return destination
 
-    def install_runtime(self, wheel: Path, destination: Path) -> Path:
+    def install_runtime(self, wheel: Path, destination: Path, expected_version: Version) -> Path:
         self.effects.append(("runtime", wheel))
+        self.runtime_versions.append(expected_version)
         if self.fail == "runtime":
             raise SetupError("runtime staging failed")
         destination.mkdir(parents=True)
@@ -271,6 +274,7 @@ def test_assume_yes_bypasses_only_prompt_and_installs_exact_manifest_assets(
 
     assert result.status is SetupStatus.READY
     assert prompted is False
+    assert harness.runtime_versions == [plan.manifest.version]
     assert [effect[1] for effect in harness.effects if effect[0] == "download"] == [
         plan.runtime_asset,
         plan.officecli_asset,

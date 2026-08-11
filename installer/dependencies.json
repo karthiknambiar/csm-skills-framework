@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "python": {
+    "version": "3.12.13"
+  },
+  "uv": {
+    "version": "0.12.3",
+    "assets": {
+      "linux-arm64": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-gnu.tar.gz",
+        "sha256": "bb66cb52e7b1823aed1183630d8d8e5c958840d584a4c55ec10a4cfc168dcca2",
+        "size": 20423730
+      },
+      "linux-x64": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101",
+        "size": 21721441
+      },
+      "macos-arm64": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-apple-darwin.tar.gz",
+        "sha256": "546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843",
+        "size": 17686637
+      },
+      "macos-x64": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-apple-darwin.tar.gz",
+        "sha256": "4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b",
+        "size": 19547702
+      },
+      "windows-arm64": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-pc-windows-msvc.zip",
+        "sha256": "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb",
+        "size": 17905068
+      },
+      "windows-x64": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-pc-windows-msvc.zip",
+        "sha256": "b23350c79e8ad0192b8124af13a0f17e8d4e4549524785e1aef389ae5a06990e",
+        "size": 19013455
+      }
+    }
+  },
+  "officecli": {
+    "version": "1.0.143",
+    "minimum_version": "1.0.137",
+    "assets": {
+      "linux-arm64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.143/officecli-linux-arm64",
+        "sha256": "c50298e4698fcd1b15fe1a0f096405ad260b5c84d4440882582d0bba1e57bd49",
+        "size": 34708999
+      },
+      "linux-x64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.143/officecli-linux-x64",
+        "sha256": "6a29c598a789b57c92c03e560907d3f131a4bd0a068785b1d338a86fc31a58a7",
+        "size": 35293861
+      },
+      "macos-arm64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.143/officecli-mac-arm64",
+        "sha256": "2f158d46f9b6c5eb0dfe4eb02038114001e17acc47b67347417c56dcf9659096",
+        "size": 33740304
+      },
+      "macos-x64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.143/officecli-mac-x64",
+        "sha256": "693d243db616c74705fec9d92fdfc8a3db36acfcea378edb7264c2a30d339d9c",
+        "size": 34680704
+      },
+      "windows-arm64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.143/officecli-win-arm64.exe",
+        "sha256": "51baf511fe136ee216fcc13cf0da9d18078da42212b22805c3a81f4163a4d7b9",
+        "size": 33800116
+      },
+      "windows-x64": {
+        "url": "https://github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.143/officecli-win-x64.exe",
+        "sha256": "d4d4c10fced307e209744cf98a56b003a6e613424fd651b08469274704afd2c6",
+        "size": 33357736
+      }
+    }
+  }
+}

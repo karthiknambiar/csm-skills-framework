@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import math
@@ -29,11 +30,13 @@ import typer
 
 from csaf.office.redaction import redact_officecli_message
 from csaf.setup.assets import (
+    AssetLimits,
     SetupError,
     _acquire_activation_lock,
     _prepare_private_parent,
     _reject_linked_parents,
     _release_activation_lock,
+    extract_verified_archive,
     read_json,
     write_json_atomic,
 )
@@ -71,6 +74,16 @@ _PRIVATE_UV_CACHE = Path("cache") / "uv"
 _PRIVATE_UV_NAME = "uv.exe" if os.name == "nt" else "uv"
 _RUNTIME_LAUNCHER_NAME = "csaf.exe" if os.name == "nt" else "csaf"
 _RUNTIME_INSTALL_TIMEOUT = 120.0
+_RUNTIME_BUNDLE_LIMITS = AssetLimits(
+    max_archive_bytes=512 * 1024 * 1024,
+    max_members=256,
+    max_member_bytes=256 * 1024 * 1024,
+    max_total_bytes=1024 * 1024 * 1024,
+)
+_RUNTIME_MEMBER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_RUNTIME_REQUIREMENT = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9_.-]*==[^\s]+ --hash=sha256:([0-9a-f]{64})$"
+)
 _CACHE_THREAD_LOCKS: dict[str, threading.Lock] = {}
 _CACHE_THREAD_LOCKS_GUARD = threading.Lock()
 _TERMINAL_STRING = re.compile(
@@ -444,23 +457,123 @@ def _regular_unlinked_file(path: Path) -> bool:
     return stat.S_ISREG(details.st_mode) and not attributes & reparse
 
 
+def _validated_runtime_bundle(
+    bundle: Path, destination: Path, expected_version: Version
+) -> tuple[Path, Path, Path]:
+    bundle_root = destination.parent / ".runtime-bundle"
+    try:
+        try:
+            extracted = extract_verified_archive(bundle, bundle_root, limits=_RUNTIME_BUNDLE_LIMITS)
+        except SetupError as error:
+            raise SetupError("runtime bundle is invalid") from error
+        names = {path.relative_to(bundle_root).as_posix() for path in extracted}
+        manifest_path = bundle_root / "runtime-bundle.json"
+        raw_manifest = manifest_path.read_bytes()
+        if len(raw_manifest) > 1024 * 1024:
+            raise SetupError("runtime bundle manifest is too large")
+        manifest = json.loads(raw_manifest.decode("utf-8"))
+        if type(manifest) is not dict or set(manifest) != {
+            "schema_version",
+            "version",
+            "platform",
+            "files",
+        }:
+            raise SetupError("runtime bundle manifest is invalid")
+        if manifest["schema_version"] != 1 or type(manifest["schema_version"]) is not int:
+            raise SetupError("runtime bundle manifest is invalid")
+        if type(manifest["version"]) is not str or not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+", manifest["version"]
+        ):
+            raise SetupError("runtime bundle manifest is invalid")
+        if manifest["version"] != str(expected_version):
+            raise SetupError("runtime bundle version does not match the release manifest")
+        if manifest["platform"] != current_platform().value:
+            raise SetupError("runtime bundle platform does not match this system")
+        files = manifest["files"]
+        if type(files) is not dict or not files:
+            raise SetupError("runtime bundle manifest is invalid")
+        declared = set(files)
+        if names != declared | {"runtime-bundle.json"}:
+            raise SetupError("runtime bundle members do not match the manifest")
+        if not {"csaf-runtime.whl", "requirements.lock"} <= declared:
+            raise SetupError("runtime bundle is incomplete")
+        wheel_names = declared - {"csaf-runtime.whl", "requirements.lock"}
+        if not wheel_names or any(
+            not name.startswith("wheelhouse/")
+            or not name.endswith(".whl")
+            or not _RUNTIME_MEMBER.fullmatch(name.removeprefix("wheelhouse/"))
+            for name in wheel_names
+        ):
+            raise SetupError("runtime bundle wheelhouse is invalid")
+        for name, expected in files.items():
+            if (
+                type(name) is not str
+                or type(expected) is not dict
+                or set(expected)
+                != {
+                    "sha256",
+                    "size",
+                }
+            ):
+                raise SetupError("runtime bundle manifest is invalid")
+            if (
+                type(expected["sha256"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{64}", expected["sha256"])
+                or type(expected["size"]) is not int
+                or expected["size"] <= 0
+            ):
+                raise SetupError("runtime bundle manifest is invalid")
+            payload = bundle_root.joinpath(*name.split("/"))
+            if not _regular_unlinked_file(payload):
+                raise SetupError("runtime bundle member is unsafe")
+            if payload.stat().st_size != expected["size"]:
+                raise SetupError("runtime bundle member size does not match")
+            if hashlib.sha256(payload.read_bytes()).hexdigest() != expected["sha256"]:
+                raise SetupError("runtime bundle member checksum does not match")
+        requirements = bundle_root / "requirements.lock"
+        lock_text = requirements.read_text(encoding="utf-8")
+        lines = lock_text.splitlines()
+        if not lines or any(not line or line != line.strip() for line in lines):
+            raise SetupError("runtime bundle requirements lock is invalid")
+        runtime_hash = files["csaf-runtime.whl"]["sha256"]
+        if not lines or lines[0] != f"./csaf-runtime.whl --hash=sha256:{runtime_hash}":
+            raise SetupError("runtime bundle requirements lock is invalid")
+        dependency_hashes: list[str] = []
+        for line in lines[1:]:
+            match = _RUNTIME_REQUIREMENT.fullmatch(line)
+            if match is None:
+                raise SetupError("runtime bundle requirements lock is invalid")
+            dependency_hashes.append(match.group(1))
+        expected_hashes = sorted(files[name]["sha256"] for name in wheel_names)
+        if sorted(dependency_hashes) != expected_hashes:
+            raise SetupError("runtime bundle requirements lock is incomplete")
+        return bundle_root, requirements, bundle_root / "wheelhouse"
+    except SetupError:
+        shutil.rmtree(bundle_root, ignore_errors=True)
+        raise
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        shutil.rmtree(bundle_root, ignore_errors=True)
+        raise SetupError("runtime bundle is invalid") from error
+
+
 def _install_runtime(
-    wheel: Path,
+    bundle: Path,
     destination: Path,
     *,
+    expected_version: Version,
     uv_path: Path,
     launcher_path: Path,
     python_executable: Path,
     runner: Callable[..., object] = subprocess.run,
 ) -> Path:
-    """Install one already-verified wheel into the private version transaction."""
-    wheel = Path(wheel)
+    """Install one verified offline runtime bundle into the version transaction."""
+    bundle = Path(bundle)
     destination = Path(destination)
     uv_path = Path(uv_path)
     launcher_path = Path(launcher_path)
     python_executable = Path(python_executable)
     if not all(
-        _regular_unlinked_file(item) for item in (wheel, uv_path, launcher_path, python_executable)
+        _regular_unlinked_file(item) for item in (bundle, uv_path, launcher_path, python_executable)
     ):
         raise SetupError("private runtime bootstrap is unavailable; rerun the CSAF installer")
     if not destination.is_absolute() or destination.exists() or destination.is_symlink():
@@ -469,6 +582,9 @@ def _install_runtime(
         _reject_linked_parents(destination.parent)
     except SetupError as error:
         raise SetupError("private runtime destination is unsafe") from error
+    bundle_root, requirements, wheelhouse = _validated_runtime_bundle(
+        bundle, destination, expected_version
+    )
     environment = {
         key: os.environ[key]
         for key in ("SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR")
@@ -493,11 +609,14 @@ def _install_runtime(
         str(python_executable),
         "--target",
         str(destination),
-        "--no-deps",
         "--offline",
         "--no-config",
-        "--",
-        str(wheel),
+        "--no-index",
+        "--require-hashes",
+        "--find-links",
+        str(wheelhouse),
+        "--requirement",
+        str(requirements),
     ]
     try:
         result = runner(
@@ -512,6 +631,8 @@ def _install_runtime(
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise SetupError("private runtime installation failed; rerun csaf setup install") from error
+    finally:
+        shutil.rmtree(bundle_root, ignore_errors=True)
     if getattr(result, "returncode", 1) != 0:
         raise SetupError("private runtime installation failed; rerun csaf setup install")
     try:
@@ -546,14 +667,15 @@ def _install_runtime(
         raise SetupError("private runtime installation is incomplete") from error
 
 
-def _runtime_installer(data_root: Path) -> Callable[[Path, Path], Path]:
+def _runtime_installer(data_root: Path) -> Callable[[Path, Path, Version], Path]:
     uv_path = data_root / _PRIVATE_BIN_DIRECTORY / _PRIVATE_UV_NAME
     launcher_path = Path(sysconfig.get_path("scripts")) / _RUNTIME_LAUNCHER_NAME
 
-    def install(wheel: Path, destination: Path) -> Path:
+    def install(wheel: Path, destination: Path, expected_version: Version) -> Path:
         return _install_runtime(
             wheel,
             destination,
+            expected_version=expected_version,
             uv_path=uv_path,
             launcher_path=launcher_path,
             python_executable=Path(sys.executable),

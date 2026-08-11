@@ -78,6 +78,41 @@ def test_windows_data_root_has_safe_home_fallback(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("system", ["Windows", "Darwin", "Linux"])
+def test_explicit_csaf_data_root_overrides_platform_default(tmp_path: Path, system: str) -> None:
+    configured = tmp_path / "configured-csaf"
+
+    assert (
+        default_data_root(
+            system=system,
+            home=tmp_path / "home",
+            environ={"CSAF_DATA_ROOT": str(configured)},
+        )
+        == configured
+    )
+
+
+@pytest.mark.parametrize("configured", ["relative/csaf", ".", "../csaf"])
+def test_explicit_csaf_data_root_must_be_absolute(tmp_path: Path, configured: str) -> None:
+    with pytest.raises(ValueError, match="CSAF_DATA_ROOT must be absolute"):
+        default_data_root(
+            system="Linux",
+            home=tmp_path,
+            environ={"CSAF_DATA_ROOT": configured},
+        )
+
+
+def test_explicit_csaf_data_root_rejects_filesystem_root(tmp_path: Path) -> None:
+    filesystem_root = Path(tmp_path.anchor)
+
+    with pytest.raises(ValueError, match="must not be a filesystem root"):
+        default_data_root(
+            system="Windows" if filesystem_root.drive else "Linux",
+            home=tmp_path,
+            environ={"CSAF_DATA_ROOT": str(filesystem_root)},
+        )
+
+
 def test_codex_skill_root_honors_codex_home_and_falls_back(tmp_path: Path) -> None:
     configured = tmp_path / "configured"
     assert (

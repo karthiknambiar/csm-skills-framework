@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/karthiknambiar/csm-skills-framework/blob/v0.1.0/installer/runtime-bundle.schema.json",
+  "title": "CSAF offline runtime bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "platform", "files"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "platform": {
+      "type": "string",
+      "enum": [
+        "linux-arm64",
+        "linux-x64",
+        "macos-arm64",
+        "macos-x64",
+        "windows-arm64",
+        "windows-x64"
+      ]
+    },
+    "files": {
+      "type": "object",
+      "required": ["csaf-runtime.whl", "requirements.lock"],
+      "properties": {
+        "csaf-runtime.whl": { "$ref": "#/$defs/file" },
+        "requirements.lock": { "$ref": "#/$defs/file" }
+      },
+      "patternProperties": {
+        "^wheelhouse/[A-Za-z0-9][A-Za-z0-9_.-]*\\.whl$": { "$ref": "#/$defs/wheelFile" }
+      },
+      "additionalProperties": false,
+      "minProperties": 3
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size"],
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "wheelFile": {
+      "allOf": [{ "$ref": "#/$defs/file" }]
+    }
+  }
+}

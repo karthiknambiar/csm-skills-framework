@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/karthiknambiar/csm-skills-framework/blob/v0.1.0/installer/release-manifest.schema.json",
+  "title": "CSAF native release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "version",
+    "runtime",
+    "codex_skill",
+    "claude_plugin",
+    "officecli"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "version": { "$ref": "#/$defs/version" },
+    "runtime": { "$ref": "#/$defs/platformAssets" },
+    "codex_skill": { "$ref": "#/$defs/asset" },
+    "claude_plugin": { "$ref": "#/$defs/asset" },
+    "officecli": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "minimum_version", "assets"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "minimum_version": { "$ref": "#/$defs/version" },
+        "assets": { "$ref": "#/$defs/platformAssets" }
+      }
+    }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "sha256", "size"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https://" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "platformAssets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "linux-arm64",
+        "linux-x64",
+        "macos-arm64",
+        "macos-x64",
+        "windows-arm64",
+        "windows-x64"
+      ],
+      "properties": {
+        "linux-arm64": { "$ref": "#/$defs/asset" },
+        "linux-x64": { "$ref": "#/$defs/asset" },
+        "macos-arm64": { "$ref": "#/$defs/asset" },
+        "macos-x64": { "$ref": "#/$defs/asset" },
+        "windows-arm64": { "$ref": "#/$defs/asset" },
+        "windows-x64": { "$ref": "#/$defs/asset" }
+      }
+    }
+  }
+}

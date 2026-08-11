@@ -453,3 +453,19 @@ def test_history_preserves_literal_backslash_dotdot_and_drive_names(
     ]
     output = render(findings)
     assert all(name in output for name in literal_names)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [".ps1", ".sh", ".json", ".yaml", ".yml"],
+)
+def test_release_and_plugin_text_files_are_scanned(tmp_path: Path, suffix: str) -> None:
+    repo = tmp_path / "release-scan"
+    _init_repo(repo)
+    secret = _secret("ghp_", "ReleaseAssetDummyToken012345678901234567")
+    path = repo / f"artifact{suffix}"
+    path.write_text(secret + "\n", encoding="utf-8")
+
+    assert scan_repository(repo, worktree=True, tracked=False, history=False) == [
+        Finding(f"artifact{suffix}", 1, "github_token")
+    ]

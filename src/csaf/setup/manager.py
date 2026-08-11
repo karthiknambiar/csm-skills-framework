@@ -115,7 +115,7 @@ class Downloader(Protocol):
 
 
 class RuntimeInstaller(Protocol):
-    def __call__(self, wheel: Path, destination: Path) -> Path: ...
+    def __call__(self, bundle: Path, destination: Path, expected_version: Version) -> Path: ...
 
 
 class ManagedAdapter(Protocol):
@@ -139,8 +139,8 @@ Checkpoint = Callable[[str], None]
 Consent = Callable[[InstallPlan], bool]
 
 
-def _missing_runtime(wheel: Path, destination: Path) -> Path:
-    del wheel, destination
+def _missing_runtime(bundle: Path, destination: Path, expected_version: Version) -> Path:
+    del bundle, destination, expected_version
     raise SetupError("runtime installer is unavailable")
 
 
@@ -1131,7 +1131,9 @@ class SetupManager:
                 wheel = transaction / "runtime.whl"
                 self._download(plan.runtime_asset, wheel)
                 try:
-                    installed = self._runtime_installer(wheel, transaction / "runtime")
+                    installed = self._runtime_installer(
+                        wheel, transaction / "runtime", plan.manifest.version
+                    )
                 except Exception as error:
                     raise SetupError("runtime staging failed") from error
                 candidate_runtime = self._staged_runtime(installed, transaction)
