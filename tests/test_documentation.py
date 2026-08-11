@@ -137,3 +137,26 @@ def test_security_and_migration_documentation_matches_public_contracts() -> None
     assert 'uv pip install --python .\\.venv\\scripts\\python.exe -e ".[dev]"' in contributing
     assert "python scripts/check_secrets.py --worktree --tracked --history" in contributing
     assert "python -m build" in contributing
+
+
+def test_release_text_files_end_with_newline_and_headings_are_spaced() -> None:
+    for document in _RELEASE_TEXT_FILES:
+        assert document.read_bytes().endswith(b"\n"), f"{document} must end with LF"
+
+    compatibility = Path("docs/compatibility.md").read_text(encoding="utf-8")
+    assert "\n\n## Hardening-release migrations\n" in compatibility
+    assert "\n\n### Test client dependency\n" in compatibility
+
+
+def test_legacy_officecli_migration_is_documented_as_temporarily_functional() -> None:
+    guide = Path("docs/officecli.md").read_text(encoding="utf-8").lower()
+    compatibility = Path("docs/compatibility.md").read_text(encoding="utf-8").lower()
+    combined = f"{guide}\n{compatibility}"
+
+    assert "functional" in combined
+    assert "0.1.x" in combined
+    assert "0.2.0" in combined
+    assert "create_arguments" in combined
+    assert "update_arguments" in combined
+    assert "officeartifactrenderer" in combined
+    assert "inject" in combined

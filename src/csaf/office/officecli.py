@@ -6,26 +6,60 @@ import re
 import shutil
 import subprocess
 import tempfile
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from csaf.office.types import OfficeFormat, OfficeRenderRequest
+from csaf.office.types import OfficeFormat, OfficeOperation, OfficeRenderRequest
 
 
 class OfficeCLIError(RuntimeError):
     """Raised when OfficeCLI is unavailable or cannot render a document."""
 
 
+_LEGACY_CREATE_ARGUMENTS = (
+    "create",
+    "--format",
+    "{format}",
+    "--input",
+    "{spec}",
+    "--output",
+    "{output}",
+)
+_LEGACY_UPDATE_ARGUMENTS = (
+    "update",
+    "--format",
+    "{format}",
+    "--input",
+    "{spec}",
+    "--existing",
+    "{existing}",
+    "--output",
+    "{output}",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class OfficeCLIConfig:
-    """Configuration for the supported local OfficeCLI command surface."""
+    """Configuration for the selected command surface and legacy 0.1.x templates."""
 
     executable: str = "officecli"
-    prefix_arguments: tuple[str, ...] = ()
+    create_arguments: tuple[str, ...] | None = None
+    update_arguments: tuple[str, ...] | None = None
     timeout_seconds: float = 120.0
+    prefix_arguments: tuple[str, ...] = ()
     minimum_version: tuple[int, int, int] = (1, 0, 137)
+
+    def __post_init__(self) -> None:
+        if self.create_arguments is not None or self.update_arguments is not None:
+            warnings.warn(
+                "OfficeCLIConfig argument templates are deprecated and will be removed in "
+                "CSAF 0.2.0; implement and inject a custom OfficeArtifactRenderer instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
 
 
 class OfficeCLIArtifactRenderer:
@@ -36,6 +70,9 @@ class OfficeCLIArtifactRenderer:
 
     def render(self, request: OfficeRenderRequest) -> bytes:
         """Render a private working copy and return it only after validation."""
+
+        if self._config.create_arguments is not None or self._config.update_arguments is not None:
+            return self._render_legacy(request)
 
         source = self._source(request)
         self._version()
@@ -87,6 +124,74 @@ class OfficeCLIArtifactRenderer:
 
             return document.read_bytes()
 
+    def _render_legacy(self, request: OfficeRenderRequest) -> bytes:
+        """Render through the deprecated 0.1.x argument-template contract."""
+
+        with tempfile.TemporaryDirectory(prefix="csaf-office-") as directory:
+            working = Path(directory)
+            suffix = ".pptx" if request.format is OfficeFormat.POWERPOINT else ".docx"
+            spec = working / "document.json"
+            output = working / f"artifact{suffix}"
+            existing = self._copy_legacy_source(
+                request.existing_path,
+                working / f"existing{suffix}",
+                "existing Office artifact",
+            )
+            template = self._copy_legacy_source(
+                request.template_path,
+                working / f"template{suffix}",
+                "Office template",
+            )
+            private_request = request.model_copy(
+                update={"existing_path": existing, "template_path": template}
+            )
+            spec.write_text(private_request.model_dump_json(indent=2), encoding="utf-8")
+            values = {
+                "format": request.format.value,
+                "spec": str(spec),
+                "output": str(output),
+                "template": str(template or ""),
+                "existing": str(existing or ""),
+            }
+            if request.operation is OfficeOperation.UPDATE:
+                argument_template = (
+                    self._config.update_arguments
+                    if self._config.update_arguments is not None
+                    else _LEGACY_UPDATE_ARGUMENTS
+                )
+            else:
+                argument_template = (
+                    self._config.create_arguments
+                    if self._config.create_arguments is not None
+                    else _LEGACY_CREATE_ARGUMENTS
+                )
+            try:
+                arguments = [argument.format_map(values) for argument in argument_template]
+            except (KeyError, ValueError) as error:
+                raise OfficeCLIError(
+                    f"invalid legacy OfficeCLI argument template: {error}"
+                ) from error
+            if template is not None:
+                arguments.extend(("--template", str(template)))
+            command = [
+                self._config.executable,
+                *self._config.prefix_arguments,
+                *arguments,
+            ]
+            self._execute(command, "legacy render")
+            if not output.is_file():
+                raise OfficeCLIError("OfficeCLI completed without creating the requested artifact")
+            return output.read_bytes()
+
+    @staticmethod
+    def _copy_legacy_source(source: Path | None, destination: Path, label: str) -> Path | None:
+        if source is None:
+            return None
+        if not source.is_file():
+            raise OfficeCLIError(f"{label} was not found: {source}")
+        shutil.copyfile(source, destination)
+        return destination
+
     def _source(self, request: OfficeRenderRequest) -> Path | None:
         if request.existing_path is not None:
             if not request.existing_path.is_file():
@@ -107,6 +212,9 @@ class OfficeCLIArtifactRenderer:
             *arguments,
         ]
         operation = arguments[0] if arguments else "command"
+        return self._execute(command, operation)
+
+    def _execute(self, command: list[str], operation: str) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment["OFFICECLI_RESIDENT_FLUSH"] = "each"
         try:

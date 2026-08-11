@@ -2,6 +2,7 @@
 
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -850,3 +851,314 @@ def test_officecli_doctor_sanitizes_malformed_version_and_skips_smoke(
     assert "OPENAI_API_KEY=<redacted-secret>" in message
     for sensitive in (windows_path, private_folder, "version.txt", "Alice", "not-for-output"):
         assert sensitive not in message
+
+
+@pytest.fixture
+def fake_legacy_officecli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    bridge = tmp_path / "fake_legacy_officecli.py"
+    calls = tmp_path / "legacy-calls.jsonl"
+    bridge.write_text(
+        """
+import json
+import os
+import pathlib
+import sys
+
+arguments = sys.argv[1:]
+with pathlib.Path(os.environ["FAKE_LEGACY_CALLS"]).open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(arguments) + "\\n")
+
+if os.environ.get("FAKE_LEGACY_INVALID_UTF8"):
+    sys.stderr.buffer.write(bytes((0x81, 0xFF)))
+    sys.stderr.buffer.flush()
+    raise SystemExit(7)
+if os.environ.get("FAKE_LEGACY_FAIL"):
+    print("legacy command failed", file=sys.stderr)
+    raise SystemExit(7)
+
+values = dict(zip(arguments[1::2], arguments[2::2]))
+if os.environ.get("FAKE_LEGACY_MUTATE_SOURCE"):
+    for flag in ("--template-value", "--existing-value", "--template", "--existing"):
+        candidate = values.get(flag)
+        if candidate and pathlib.Path(candidate).is_file():
+            pathlib.Path(candidate).write_bytes(b"mutated-private-copy")
+if os.environ.get("FAKE_LEGACY_MISSING_OUTPUT"):
+    raise SystemExit(0)
+
+spec = json.loads(pathlib.Path(values["--input"]).read_text(encoding="utf-8"))
+pathlib.Path(values["--output"]).write_text(
+    json.dumps({"command": arguments[0], "title": spec["title"]}),
+    encoding="utf-8",
+)
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FAKE_LEGACY_CALLS", str(calls))
+    return bridge, calls
+
+
+def _legacy_calls(path: Path) -> list[list[str]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_legacy_argument_templates_warn_at_caller_with_migration_message() -> None:
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"removed in CSAF 0\.2\.0.*OfficeArtifactRenderer",
+    ) as captured:
+        config = OfficeCLIConfig(create_arguments=("legacy-create",))
+
+    assert captured[0].filename == __file__
+    assert config.create_arguments == ("legacy-create",)
+    assert config.update_arguments is None
+
+
+def test_default_config_emits_no_deprecation_and_keeps_selected_contract() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = OfficeCLIConfig()
+
+    assert config.create_arguments is None
+    assert config.update_arguments is None
+    assert config.minimum_version == (1, 0, 137)
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_commands"),
+    [
+        (
+            {
+                "create_arguments": (
+                    "custom-create",
+                    "--format",
+                    "{format}",
+                    "--input",
+                    "{spec}",
+                    "--output",
+                    "{output}",
+                )
+            },
+            ("custom-create", "update"),
+        ),
+        (
+            {
+                "update_arguments": (
+                    "custom-update",
+                    "--format",
+                    "{format}",
+                    "--input",
+                    "{spec}",
+                    "--existing",
+                    "{existing}",
+                    "--output",
+                    "{output}",
+                )
+            },
+            ("create", "custom-update"),
+        ),
+    ],
+)
+def test_legacy_partial_override_uses_old_default_for_missing_counterpart(
+    fake_legacy_officecli: tuple[Path, Path],
+    tmp_path: Path,
+    override: dict[str, tuple[str, ...]],
+    expected_commands: tuple[str, str],
+) -> None:
+    bridge, calls_path = fake_legacy_officecli
+    with pytest.warns(DeprecationWarning):
+        config = OfficeCLIConfig(
+            executable=sys.executable,
+            prefix_arguments=(str(bridge),),
+            **override,
+        )
+    renderer = OfficeCLIArtifactRenderer(config)
+
+    assert json.loads(renderer.render(_request()).decode())["title"] == "Acme QBR"
+    existing = tmp_path / "existing.docx"
+    existing.write_bytes(b"original")
+    assert (
+        json.loads(
+            renderer.render(
+                OfficeRenderRequest(
+                    format=OfficeFormat.WORD,
+                    operation="update",
+                    title="Updated QBR",
+                    sections=(OfficeSection(title="Summary"),),
+                    existing_path=existing,
+                )
+            ).decode()
+        )["title"]
+        == "Updated QBR"
+    )
+
+    assert tuple(call[0] for call in _legacy_calls(calls_path)) == expected_commands
+
+
+@pytest.mark.parametrize(
+    ("operation", "override_name", "source_name", "source_flag"),
+    [
+        ("create", "create_arguments", "template_path", "--template-value"),
+        ("update", "update_arguments", "existing_path", "--existing-value"),
+    ],
+)
+def test_legacy_placeholders_use_private_source_copies(
+    fake_legacy_officecli: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    override_name: str,
+    source_name: str,
+    source_flag: str,
+) -> None:
+    bridge, calls_path = fake_legacy_officecli
+    source = tmp_path / ("source.docx" if operation == "update" else "template.docx")
+    source.write_bytes(b"original-source")
+    arguments = (
+        f"legacy-{operation}",
+        "--format",
+        "{format}",
+        "--input",
+        "{spec}",
+        "--output",
+        "{output}",
+        "--template-value",
+        "{template}",
+        "--existing-value",
+        "{existing}",
+    )
+    with pytest.warns(DeprecationWarning):
+        config = OfficeCLIConfig(
+            executable=sys.executable,
+            prefix_arguments=(str(bridge),),
+            **{override_name: arguments},
+        )
+    monkeypatch.setenv("FAKE_LEGACY_MUTATE_SOURCE", "1")
+
+    content = OfficeCLIArtifactRenderer(config).render(
+        OfficeRenderRequest(
+            format=OfficeFormat.WORD,
+            operation=operation,
+            title="Private source QBR",
+            sections=(OfficeSection(title="Summary"),),
+            **{source_name: source},
+        )
+    )
+
+    call = _legacy_calls(calls_path)[0]
+    values = dict(zip(call[1::2], call[2::2]))
+    private_source = Path(values[source_flag])
+    assert json.loads(content.decode())["command"] == f"legacy-{operation}"
+    assert values["--format"] == "word"
+    assert not Path(values["--input"]).exists()
+    assert not Path(values["--output"]).exists()
+    assert private_source != source
+    assert not private_source.exists()
+    assert source.read_bytes() == b"original-source"
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        ("FAKE_LEGACY_FAIL", "failed with exit code 7"),
+        ("FAKE_LEGACY_INVALID_UTF8", "not valid UTF-8"),
+        ("FAKE_LEGACY_MISSING_OUTPUT", "without creating the requested artifact"),
+    ],
+)
+def test_legacy_renderer_enforces_error_and_output_boundaries(
+    fake_legacy_officecli: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+    expected: str,
+) -> None:
+    bridge, _ = fake_legacy_officecli
+    with pytest.warns(DeprecationWarning):
+        config = OfficeCLIConfig(
+            executable=sys.executable,
+            prefix_arguments=(str(bridge),),
+            create_arguments=(
+                "legacy-create",
+                "--input",
+                "{spec}",
+                "--output",
+                "{output}",
+            ),
+        )
+    monkeypatch.setenv(environment, "1")
+
+    with pytest.raises(OfficeCLIError, match=expected):
+        OfficeCLIArtifactRenderer(config).render(_request())
+
+
+def test_legacy_positional_config_signature_binds_and_renders_as_before(
+    fake_legacy_officecli: tuple[Path, Path], tmp_path: Path
+) -> None:
+    bridge, calls_path = fake_legacy_officecli
+    create_arguments = (
+        str(bridge),
+        "old-create",
+        "--input",
+        "{spec}",
+        "--output",
+        "{output}",
+    )
+    update_arguments = (
+        str(bridge),
+        "old-update",
+        "--input",
+        "{spec}",
+        "--existing",
+        "{existing}",
+        "--output",
+        "{output}",
+    )
+    with pytest.warns(DeprecationWarning):
+        config = OfficeCLIConfig(
+            sys.executable,
+            create_arguments,
+            update_arguments,
+            7.5,
+        )
+
+    assert config.executable == sys.executable
+    assert config.create_arguments == create_arguments
+    assert config.update_arguments == update_arguments
+    assert config.timeout_seconds == 7.5
+    assert config.prefix_arguments == ()
+    assert config.minimum_version == (1, 0, 137)
+
+    renderer = OfficeCLIArtifactRenderer(config)
+    assert json.loads(renderer.render(_request()).decode())["command"] == "old-create"
+    existing = tmp_path / "existing.docx"
+    existing.write_bytes(b"original")
+    updated = renderer.render(
+        OfficeRenderRequest(
+            format=OfficeFormat.WORD,
+            operation="update",
+            title="Updated QBR",
+            sections=(OfficeSection(title="Summary"),),
+            existing_path=existing,
+        )
+    )
+    assert json.loads(updated.decode())["command"] == "old-update"
+    assert [call[0] for call in _legacy_calls(calls_path)] == ["old-create", "old-update"]
+
+
+def test_empty_legacy_template_does_not_fall_back_to_old_default(
+    fake_legacy_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, calls_path = fake_legacy_officecli
+    with pytest.warns(DeprecationWarning):
+        config = OfficeCLIConfig(
+            executable=sys.executable,
+            prefix_arguments=(str(bridge),),
+            create_arguments=(),
+        )
+    monkeypatch.setenv("FAKE_LEGACY_MISSING_OUTPUT", "1")
+
+    with pytest.raises(
+        OfficeCLIError,
+        match="without creating the requested artifact",
+    ):
+        OfficeCLIArtifactRenderer(config).render(_request())
+
+    assert _legacy_calls(calls_path) == [[]]

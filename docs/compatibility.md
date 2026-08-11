@@ -35,6 +35,7 @@ may require immediate removal or behavior changes.
 Community extensions should declare the CSAF versions they test against and run
 contract/conformance tests in CI. Vendor-specific payloads must not become shared
 domain contracts merely to preserve an adapter implementation.
+
 ## Hardening-release migrations
 
 ### Meeting actions and commitments
@@ -48,14 +49,14 @@ metadata update is a pre-1.0 minor contract change.
 
 ### OfficeCLI configuration
 
-The default renderer now targets fully local `iOfficeAI/OfficeCLI` 1.0.137 or
-newer. The old configurable `create_arguments` and `update_arguments`
-argument-template fields are deprecated and are not accepted by the selected
-default `OfficeCLIArtifactRenderer`. Remove those fields and use
-`OfficeCLIConfig` for the executable, test-only prefix arguments, timeout, and
-minimum version. A host that needs another command surface can continue to
-implement and inject any `OfficeArtifactRenderer`; vendor-specific command
-templates do not belong in the default adapter.
+The default renderer targets fully local `iOfficeAI/OfficeCLI` 1.0.137 or newer.
+The configurable `create_arguments` and `update_arguments` argument-template
+fields remain functional in CSAF 0.1.x for one minor compatibility window and
+emit `DeprecationWarning` when used. If only one field is supplied, the other
+operation uses its old default template. Both fields will be removed in CSAF
+0.2.0. Migrate to the selected default command flow, or implement and inject a
+custom `OfficeArtifactRenderer` when another command surface is required.
+
 ### Test client dependency
 
 The development extra uses the `httpx2>=2,<3` distribution for Starlette's

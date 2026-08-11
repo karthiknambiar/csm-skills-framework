@@ -76,23 +76,22 @@ the same format-neutral QBR sections.
 
 ## Migration from configurable argument templates
 
-Earlier CSAF previews documented `create_arguments` and `update_arguments` on
-`OfficeCLIConfig`. Those argument-template fields are deprecated and are not
-accepted by the selected default adapter. Remove them and use the supported
-configuration fields only:
+Earlier CSAF previews exposed `create_arguments` and `update_arguments` on
+`OfficeCLIConfig`. These fields remain functional throughout CSAF 0.1.x for a
+one-minor compatibility window, but constructing a config with either field
+emits `DeprecationWarning`. They will be removed in CSAF 0.2.0.
 
-```python
-from csaf.office import OfficeCLIConfig
+Supplying either legacy field selects the deprecated renderer path. A missing
+counterpart uses its old default template, so applications can override only
+create or only update while migrating. The supported placeholders remain
+`{format}`, `{spec}`, `{output}`, `{template}`, and `{existing}`. Existing files
+and templates are copied into a private temporary directory before the legacy
+process runs; the user-owned source is never passed as a mutable working file.
+Legacy subprocess output must be strict UTF-8 and the process must create the
+requested output artifact.
 
-config = OfficeCLIConfig(
-    executable="officecli",
-    timeout_seconds=120.0,
-    minimum_version=(1, 0, 137),
-)
-```
-
-Tests may use `prefix_arguments` to place a local test bridge before OfficeCLI
-arguments. Applications that must support a different command surface should
-implement `OfficeArtifactRenderer` and inject that renderer with
-`create_runtime(office_renderer=renderer)` instead of rewriting default command
-templates.
+The selected default remains the local OfficeCLI 1.0.137
+`create`/`batch`/`validate`/`view` flow described above. New integrations should
+not adopt the legacy fields. Applications that need a different command surface
+should implement `OfficeArtifactRenderer` and inject the custom renderer with
+`create_runtime(office_renderer=renderer)`.
