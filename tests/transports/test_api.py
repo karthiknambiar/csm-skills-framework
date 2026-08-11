@@ -5,11 +5,12 @@
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
-pytest.importorskip("httpx")
+pytest.importorskip("httpx2")
 from fastapi.testclient import TestClient
 
 from csaf.api import create_app
 from csaf.core import create_runtime
+from csaf.office import OfficeCLIError
 from csaf.schemas import MemoryKind, MemoryRecordCreate
 
 
@@ -121,5 +122,41 @@ def test_meeting_copilot_runs_through_rest() -> None:
         assert response.status_code == 200
         assert response.json()["output"]["commitments"][0]["speaker"] == "Alex"
         assert runtime.memory.history("acme", "meeting:meeting-1")
+    finally:
+        runtime.memory.close()
+
+
+def test_invalid_skill_input_maps_to_unprocessable_entity() -> None:
+    runtime = create_runtime()
+    try:
+        with TestClient(create_app(runtime)) as client:
+            response = client.post(
+                "/skills/qbr",
+                json={"input": {"customer_id": "acme", "quarter": "Q3"}},
+            )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith("invalid input for skill qbr:")
+    finally:
+        runtime.memory.close()
+
+
+def test_office_renderer_failure_maps_to_bad_gateway() -> None:
+    class FailingRenderer:
+        def render(self, request: object) -> bytes:
+            raise OfficeCLIError("dummy renderer unavailable")
+
+    runtime = create_runtime(office_renderer=FailingRenderer())
+    try:
+        with TestClient(create_app(runtime)) as client:
+            response = client.post(
+                "/skills/qbr",
+                json={"input": {"customer_id": "acme", "quarter": "2026-Q3"}},
+            )
+
+        assert response.status_code == 502
+        assert response.json() == {
+            "detail": "QBR artifact rendering failed: dummy renderer unavailable"
+        }
     finally:
         runtime.memory.close()
