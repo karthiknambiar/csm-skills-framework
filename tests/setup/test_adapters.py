@@ -593,6 +593,16 @@ def _pid_is_running(pid: int) -> bool:
     return True
 
 
+def _pid_stops_within(pid: int, timeout: float = 0.5) -> bool:
+    deadline = time.monotonic() + timeout
+    while _pid_is_running(pid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+    return True
+
+
 def test_subprocess_timeout_kills_pipe_inheriting_descendant_without_hanging(
     tmp_path: Path,
 ) -> None:
@@ -751,13 +761,16 @@ def test_windows_timeout_assigns_suspended_parent_before_immediate_child_spawn(
         return real_popen(*args, **kwargs)
 
     monkeypatch.setattr("csaf.setup.adapters.subprocess.Popen", recording_popen)
-    descendant_pids: list[int] = []
+    descendants: list[tuple[int, Path]] = []
     started = time.monotonic()
     for attempt in range(6):
         child_pid_path = tmp_path / f"immediate-child-{attempt}.pid"
+        delayed_marker = tmp_path / f"immediate-child-{attempt}.survived"
         child_code = (
             f"__import__('pathlib').Path({str(child_pid_path)!r})"
             ".write_text(str(__import__('os').getpid()));"
+            "__import__('time').sleep(0.3);"
+            f"__import__('pathlib').Path({str(delayed_marker)!r}).write_text('survived');"
             "__import__('time').sleep(4)"
         )
         parent_code = (
@@ -774,10 +787,11 @@ def test_windows_timeout_assigns_suspended_parent_before_immediate_child_spawn(
                         stderr=stderr,
                         timeout=0.2,
                     )
-        descendant_pids.append(int(child_pid_path.read_text(encoding="utf-8")))
+        descendants.append((int(child_pid_path.read_text(encoding="utf-8")), delayed_marker))
 
     assert time.monotonic() - started < 6
     assert len(creation_flags) == 6
     assert all(flags & 0x00000004 for flags in creation_flags)
-    for descendant_pid in descendant_pids:
-        assert not _pid_is_running(descendant_pid)
+    for descendant_pid, delayed_marker in descendants:
+        assert _pid_stops_within(descendant_pid)
+        assert not delayed_marker.exists()
