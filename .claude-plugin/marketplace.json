@@ -1,0 +1,14 @@
+{
+  "name": "csaf",
+  "owner": {
+    "name": "CSAF contributors"
+  },
+  "plugins": [
+    {
+      "name": "csaf",
+      "source": "./plugins/csaf",
+      "version": "0.1.0",
+      "license": "Apache-2.0"
+    }
+  ]
+}

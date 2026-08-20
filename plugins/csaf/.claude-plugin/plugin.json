@@ -1,0 +1,6 @@
+{
+  "name": "csaf",
+  "version": "0.1.0",
+  "description": "Local deterministic customer-success workflows for briefs, meetings, and QBRs.",
+  "license": "Apache-2.0"
+}

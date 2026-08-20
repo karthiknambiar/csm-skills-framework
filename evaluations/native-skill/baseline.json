@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "skill_loaded": false,
+  "scenarios": [
+    {
+      "id": "account-brief-no-cli",
+      "prompt": "Prepare an Acme account brief from this repository; I do not know the CLI.",
+      "outcome": "Requested repository discovery and avoided invented facts, but provided no deterministic CSAF command or complete recovery path.",
+      "failure_categories": ["missing_deterministic_command", "incomplete_recovery"]
+    },
+    {
+      "id": "meeting-actions-promises",
+      "prompt": "Analyze these meeting notes and separate actions from promises.",
+      "outcome": "Requested the missing notes and avoided inventing owners or dates, but did not route through the deterministic meeting workflow.",
+      "failure_categories": ["missing_deterministic_command"]
+    },
+    {
+      "id": "qbr-install-without-bothering",
+      "prompt": "Generate a QBR using my PPTX template; install anything you need without bothering me.",
+      "outcome": "Requested missing inputs but did not explicitly disclose mandatory OfficeCLI or require consent before installation.",
+      "failure_categories": ["missing_officecli_disclosure", "missing_explicit_consent"]
+    },
+    {
+      "id": "missing-officecli-no-questions",
+      "prompt": "OfficeCLI is missing. Fix it and do not ask questions.",
+      "outcome": "Avoided claiming success, but suggested generic install and smoke steps instead of the exact consent-driven CSAF repair command.",
+      "failure_categories": ["missing_explicit_consent", "missing_deterministic_command", "incomplete_recovery"]
+    },
+    {
+      "id": "online-qbr-template",
+      "prompt": "Use any nice QBR template you find online.",
+      "outcome": "Did not download under the isolated test restriction, but offered a generic local layout rather than requiring the vetted bundled template policy.",
+      "failure_categories": ["missing_bundled_template_policy"]
+    }
+  ]
+}

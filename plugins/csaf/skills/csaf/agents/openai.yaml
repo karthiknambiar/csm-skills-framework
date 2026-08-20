@@ -1,0 +1,4 @@
+interface:
+  display_name: "CSAF"
+  short_description: "Local customer-success briefs, meetings, and QBRs"
+  default_prompt: "Use $csaf to select the appropriate grounded customer-success workflow."
