@@ -17,6 +17,7 @@ from csaf.office import (
     OfficeRenderRequest,
     OfficeSection,
 )
+from csaf.templates.qbr import default_qbr_powerpoint, default_qbr_word
 
 
 @pytest.fixture
@@ -108,6 +109,8 @@ elif command == "view":
         "FAKE_OFFICECLI_ISSUES",
         '{"success": true, "data": {"Count": 0, "Issues": []}}',
     ))
+elif command == "close":
+    print('{"success": true, "data": "Resident closed"}')
 """.strip(),
         encoding="utf-8",
     )
@@ -124,8 +127,15 @@ def _renderer(bridge: Path, **overrides: object) -> OfficeCLIArtifactRenderer:
     return OfficeCLIArtifactRenderer(OfficeCLIConfig(**values))  # type: ignore[arg-type]
 
 
-def _calls(path: Path) -> list[dict[str, object]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+def _calls(
+    path: Path,
+    *,
+    include_close: bool = False,
+) -> list[dict[str, object]]:
+    calls = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    if include_close:
+        return calls
+    return [call for call in calls if call["arguments"][0] != "close"]
 
 
 def _request(format: OfficeFormat = OfficeFormat.WORD) -> OfficeRenderRequest:
@@ -189,6 +199,110 @@ def test_powerpoint_create_uses_version_create_batch_validate_and_view(
     )
 
 
+@pytest.mark.parametrize(
+    ("office_format", "default_template"),
+    [
+        (OfficeFormat.POWERPOINT, default_qbr_powerpoint),
+        (OfficeFormat.WORD, default_qbr_word),
+    ],
+)
+def test_bundled_template_create_boundary_contains_only_readable_generated_content(
+    fake_officecli: tuple[Path, Path],
+    office_format: OfficeFormat,
+    default_template: object,
+) -> None:
+    bridge, _ = fake_officecli
+    with default_template() as template:  # type: ignore[operator]
+        original = template.read_bytes()
+        content = _renderer(bridge).render(
+            OfficeRenderRequest(
+                format=office_format,
+                title="Acme 2026-Q3 QBR",
+                subtitle="Version 1",
+                sections=(
+                    OfficeSection(
+                        title="Executive summary",
+                        bullets=("Adoption improved by 18%.",),
+                        citations=("memory:product_usage:1",),
+                    ),
+                ),
+                template_path=template,
+            )
+        )
+        assert template.read_bytes() == original
+
+    payload = json.loads(content.rsplit(b"|batch:", 1)[1])
+    serialized = json.dumps(payload, ensure_ascii=False)
+    for generated in (
+        "Acme 2026-Q3 QBR",
+        "Version 1",
+        "Executive summary",
+        "Adoption improved by 18%.",
+        "memory:product_usage:1",
+    ):
+        assert generated in serialized
+    for scaffold in ("TBD", "Customer Name", "Add verified", "Replace placeholders"):
+        assert scaffold not in serialized
+    if office_format is OfficeFormat.POWERPOINT:
+        sizes = [
+            int(item["props"]["size"])
+            for item in payload
+            if item.get("type") == "shape" and "size" in item.get("props", {})
+        ]
+        assert sizes
+        assert min(sizes) >= 16
+
+
+def test_powerpoint_generated_accents_match_bundled_theme(
+    fake_officecli: tuple[Path, Path],
+) -> None:
+    bridge, _ = fake_officecli
+    content = _renderer(bridge).render(
+        OfficeRenderRequest(
+            format=OfficeFormat.POWERPOINT,
+            title="Acme QBR",
+            subtitle="Quarterly business review",
+            sections=(
+                OfficeSection(
+                    title="Summary",
+                    bullets=("Adoption improved.",),
+                    citations=("memory:usage:1",),
+                ),
+            ),
+        )
+    )
+
+    payload = json.loads(content.rsplit(b"|batch:", 1)[1])
+    shapes_by_text = {
+        item["props"]["text"]: item["props"]
+        for item in payload
+        if item.get("type") == "shape" and "text" in item.get("props", {})
+    }
+    assert shapes_by_text["Quarterly business review"]["color"] == "38A3A5"
+    assert shapes_by_text["Sources: memory:usage:1"]["color"] == "1F5A7A"
+
+
+def test_word_generated_bullets_request_real_list_formatting(
+    fake_officecli: tuple[Path, Path],
+) -> None:
+    bridge, _ = fake_officecli
+    content = _renderer(bridge).render(
+        OfficeRenderRequest(
+            format=OfficeFormat.WORD,
+            title="Acme QBR",
+            sections=(OfficeSection(title="Summary", bullets=("Adoption improved.",)),),
+        )
+    )
+
+    payload = json.loads(content.rsplit(b"|batch:", 1)[1])
+    bullet = next(item for item in payload if item["props"].get("text") == "Adoption improved.")
+    assert bullet["props"] == {
+        "text": "Adoption improved.",
+        "style": "ListBullet",
+        "listStyle": "bullet",
+    }
+
+
 def test_word_create_builds_deterministic_title_sections_bullets_and_citations(
     fake_officecli: tuple[Path, Path],
 ) -> None:
@@ -227,11 +341,19 @@ def test_word_create_builds_deterministic_title_sections_bullets_and_citations(
 
 
 @pytest.mark.parametrize("source_kind", ["template", "existing"])
+@pytest.mark.parametrize(
+    ("office_format", "suffix"),
+    [(OfficeFormat.POWERPOINT, ".pptx"), (OfficeFormat.WORD, ".docx")],
+)
 def test_source_is_copied_and_never_mutated(
-    fake_officecli: tuple[Path, Path], tmp_path: Path, source_kind: str
+    fake_officecli: tuple[Path, Path],
+    tmp_path: Path,
+    source_kind: str,
+    office_format: OfficeFormat,
+    suffix: str,
 ) -> None:
     bridge, calls_path = fake_officecli
-    source = tmp_path / f"source-{source_kind}.docx"
+    source = tmp_path / f"source-{source_kind}{suffix}"
     original = b"exact user document bytes"
     source.write_bytes(original)
     values = (
@@ -242,7 +364,7 @@ def test_source_is_copied_and_never_mutated(
 
     content = _renderer(bridge).render(
         OfficeRenderRequest(
-            format=OfficeFormat.WORD,
+            format=office_format,
             title="Updated QBR",
             sections=(OfficeSection(title="Summary", bullets=("Updated",)),),
             **values,
@@ -313,6 +435,46 @@ def test_officecli_adapter_rejects_invalid_artifacts(
         _renderer(bridge).render(_request(OfficeFormat.POWERPOINT))
 
     assert [call["arguments"][0] for call in _calls(calls_path)] == expected_commands
+
+
+def test_officecli_adapter_accepts_official_success_shapes_and_closes_resident(
+    fake_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, calls_path = fake_officecli
+    monkeypatch.setenv(
+        "FAKE_OFFICECLI_VALIDATE",
+        '{"success": true, "data": "Validation passed: no errors found.", '
+        '"message": "Validation passed: no errors found."}',
+    )
+    monkeypatch.setenv(
+        "FAKE_OFFICECLI_ISSUES",
+        '{"success": true, "data": {"count": 0, "issues": []}}',
+    )
+
+    assert _renderer(bridge).render(_request()).startswith(b"created|batch:")
+    assert [call["arguments"][0] for call in _calls(calls_path, include_close=True)] == [
+        "--version",
+        "create",
+        "batch",
+        "validate",
+        "view",
+        "close",
+    ]
+
+
+def test_officecli_adapter_closes_resident_when_validation_fails(
+    fake_officecli: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge, calls_path = fake_officecli
+    monkeypatch.setenv("FAKE_OFFICECLI_VALIDATE", "not-json")
+
+    with pytest.raises(OfficeCLIError, match="validation"):
+        _renderer(bridge).render(_request())
+
+    assert [call["arguments"][0] for call in _calls(calls_path, include_close=True)][-2:] == [
+        "validate",
+        "close",
+    ]
 
 
 def test_officecli_adapter_allows_nonfatal_document_issue(

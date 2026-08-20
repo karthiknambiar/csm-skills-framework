@@ -1,5 +1,6 @@
 """Quarterly Business Review generation backed by Customer Memory and OfficeCLI."""
 
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -26,6 +27,7 @@ from csaf.skills import (
     SkillResultDraft,
 )
 from csaf.skills.errors import SkillExecutionError
+from csaf.templates.qbr import default_qbr_powerpoint, default_qbr_word
 
 
 class QBRInput(BaseModel):
@@ -159,35 +161,62 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
             word_operation=self._operation(skill_input.existing_word),
         )
         sections = self._sections(output)
-        try:
-            powerpoint = self._renderer.render(
-                OfficeRenderRequest(
-                    format=OfficeFormat.POWERPOINT,
-                    operation=output.powerpoint_operation,
-                    title=f"{skill_input.customer_id} {skill_input.quarter} QBR",
-                    subtitle=f"Version {version}",
-                    sections=sections,
-                    template_path=skill_input.powerpoint_template,
-                    existing_path=skill_input.existing_powerpoint,
+        with ExitStack() as template_stack:
+            if skill_input.existing_powerpoint is not None:
+                powerpoint_template = None
+                powerpoint_source = "existing"
+            elif skill_input.powerpoint_template is not None:
+                powerpoint_template = skill_input.powerpoint_template
+                powerpoint_source = "user"
+            else:
+                powerpoint_template = template_stack.enter_context(default_qbr_powerpoint())
+                powerpoint_source = "bundled"
+
+            if skill_input.existing_word is not None:
+                word_template = None
+                word_source = "existing"
+            elif skill_input.word_template is not None:
+                word_template = skill_input.word_template
+                word_source = "user"
+            else:
+                word_template = template_stack.enter_context(default_qbr_word())
+                word_source = "bundled"
+
+            try:
+                powerpoint = self._renderer.render(
+                    OfficeRenderRequest(
+                        format=OfficeFormat.POWERPOINT,
+                        operation=output.powerpoint_operation,
+                        title=f"{skill_input.customer_id} {skill_input.quarter} QBR",
+                        subtitle=f"Version {version}",
+                        sections=sections,
+                        template_path=powerpoint_template,
+                        existing_path=skill_input.existing_powerpoint,
+                    )
                 )
-            )
-            word = self._renderer.render(
-                OfficeRenderRequest(
-                    format=OfficeFormat.WORD,
-                    operation=output.word_operation,
-                    title=f"{skill_input.customer_id} {skill_input.quarter} QBR",
-                    subtitle=f"Version {version}",
-                    sections=sections,
-                    template_path=skill_input.word_template,
-                    existing_path=skill_input.existing_word,
+                word = self._renderer.render(
+                    OfficeRenderRequest(
+                        format=OfficeFormat.WORD,
+                        operation=output.word_operation,
+                        title=f"{skill_input.customer_id} {skill_input.quarter} QBR",
+                        subtitle=f"Version {version}",
+                        sections=sections,
+                        template_path=word_template,
+                        existing_path=skill_input.existing_word,
+                    )
                 )
-            )
-        except OfficeCLIError as error:
-            raise SkillExecutionError(f"QBR artifact rendering failed: {error}") from error
+            except OfficeCLIError as error:
+                raise SkillExecutionError(f"QBR artifact rendering failed: {error}") from error
         basename = f"{skill_input.customer_id}-{skill_input.quarter}-qbr-v{version}"
         return SkillResultDraft(
             output=output,
-            memory_updates=self._memory_updates(skill_input, output, basename),
+            memory_updates=self._memory_updates(
+                skill_input,
+                output,
+                basename,
+                powerpoint_source=powerpoint_source,
+                word_source=word_source,
+            ),
             artifacts=(
                 Artifact(
                     type=ArtifactType.POWERPOINT,
@@ -279,6 +308,9 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
         skill_input: QBRInput,
         output: QBROutput,
         basename: str,
+        *,
+        powerpoint_source: str,
+        word_source: str,
     ) -> tuple[MemoryRecordCreate, ...]:
         generated_at = output.generated_at
         common_metadata = {
@@ -292,7 +324,13 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
                 kind=MemoryKind.QBR,
                 logical_key=f"qbr:{skill_input.quarter}",
                 content=output.executive_summary,
-                metadata=common_metadata,
+                metadata={
+                    **common_metadata,
+                    "template_source": {
+                        "powerpoint": powerpoint_source,
+                        "word": word_source,
+                    },
+                },
                 occurred_at=generated_at,
             ),
             MemoryRecordCreate(
@@ -300,7 +338,11 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
                 kind=MemoryKind.ARTIFACT,
                 logical_key=f"artifact:qbr:{skill_input.quarter}:powerpoint",
                 content=f"Generated {basename}.pptx",
-                metadata={**common_metadata, "format": "powerpoint"},
+                metadata={
+                    **common_metadata,
+                    "format": "powerpoint",
+                    "template_source": powerpoint_source,
+                },
                 occurred_at=generated_at,
             ),
             MemoryRecordCreate(
@@ -308,7 +350,11 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
                 kind=MemoryKind.ARTIFACT,
                 logical_key=f"artifact:qbr:{skill_input.quarter}:word",
                 content=f"Generated {basename}.docx",
-                metadata={**common_metadata, "format": "word"},
+                metadata={
+                    **common_metadata,
+                    "format": "word",
+                    "template_source": word_source,
+                },
                 occurred_at=generated_at,
             ),
         )

@@ -85,46 +85,62 @@ class OfficeCLIArtifactRenderer:
             suffix = ".pptx" if request.format is OfficeFormat.POWERPOINT else ".docx"
             document = working / f"artifact{suffix}"
             batch = working / "batch.json"
+            render_error: BaseException | None = None
 
-            if source is None:
-                self._run("create", str(document))
-            else:
-                shutil.copyfile(source, document)
+            try:
+                if source is None:
+                    self._run("create", str(document))
+                else:
+                    shutil.copyfile(source, document)
 
-            commands = (
-                self._powerpoint_batch(request)
-                if request.format is OfficeFormat.POWERPOINT
-                else self._word_batch(request)
-            )
-            batch.write_text(
-                json.dumps(commands, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            batch_result = self._json_envelope(
-                "batch",
-                self._run("batch", str(document), "--input", str(batch), "--json").stdout,
-            )
-            self._validate_batch_receipt(batch_result, len(commands))
-            if not document.is_file():
-                raise OfficeCLIError("OfficeCLI completed without creating the requested artifact")
-
-            validation = self._json_envelope(
-                "validation", self._run("validate", str(document), "--json").stdout
-            )
-            self._validate_validation(validation)
-
-            issues = self._validate_issues(
-                self._json_envelope(
-                    "issue inspection",
-                    self._run("view", str(document), "issues", "--json").stdout,
+                commands = (
+                    self._powerpoint_batch(request)
+                    if request.format is OfficeFormat.POWERPOINT
+                    else self._word_batch(request)
                 )
-            )
-            fatal_issues = [
-                issue for issue in issues if str(issue["Severity"]).casefold() == "error"
-            ]
-            if fatal_issues:
-                detail = "; ".join(self._issue_detail(issue) for issue in fatal_issues)
-                raise OfficeCLIError(f"OfficeCLI reported fatal document issues: {detail}")
+                batch.write_text(
+                    json.dumps(commands, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                batch_result = self._json_envelope(
+                    "batch",
+                    self._run("batch", str(document), "--input", str(batch), "--json").stdout,
+                )
+                self._validate_batch_receipt(batch_result, len(commands))
+                if not document.is_file():
+                    raise OfficeCLIError(
+                        "OfficeCLI completed without creating the requested artifact"
+                    )
+
+                validation = self._json_envelope(
+                    "validation",
+                    self._run("validate", str(document), "--json").stdout,
+                    allow_validation_success_message=True,
+                )
+                self._validate_validation(validation)
+
+                issues = self._validate_issues(
+                    self._json_envelope(
+                        "issue inspection",
+                        self._run("view", str(document), "issues", "--json").stdout,
+                    )
+                )
+                fatal_issues = [
+                    issue for issue in issues if str(issue["Severity"]).casefold() == "error"
+                ]
+                if fatal_issues:
+                    detail = "; ".join(self._issue_detail(issue) for issue in fatal_issues)
+                    raise OfficeCLIError(f"OfficeCLI reported fatal document issues: {detail}")
+            except BaseException as error:
+                render_error = error
+                raise
+            finally:
+                if document.is_file():
+                    try:
+                        self._run("close", str(document), "--json")
+                    except OfficeCLIError:
+                        if render_error is None:
+                            raise
 
             return document.read_bytes()
 
@@ -297,7 +313,7 @@ class OfficeCLIArtifactRenderer:
                     request.subtitle,
                     y="9cm",
                     size="20",
-                    color="666666",
+                    color="38A3A5",
                 )
             )
         for slide_number, section in enumerate(request.sections, start=2):
@@ -324,8 +340,8 @@ class OfficeCLIArtifactRenderer:
                         slide_number,
                         f"Sources: {'; '.join(section.citations)}",
                         y="16.5cm",
-                        size="10",
-                        color="666666",
+                        size="16",
+                        color="1F5A7A",
                     )
                 )
         return commands
@@ -365,7 +381,7 @@ class OfficeCLIArtifactRenderer:
         for section in request.sections:
             commands.append(OfficeCLIArtifactRenderer._word_paragraph(section.title, "Heading1"))
             commands.extend(
-                OfficeCLIArtifactRenderer._word_paragraph(bullet, "ListBullet")
+                OfficeCLIArtifactRenderer._word_paragraph(bullet, "ListBullet", list_style="bullet")
                 for bullet in section.bullets
             )
             if section.citations:
@@ -378,16 +394,29 @@ class OfficeCLIArtifactRenderer:
         return commands
 
     @staticmethod
-    def _word_paragraph(text: str, style: str) -> dict[str, Any]:
+    def _word_paragraph(
+        text: str,
+        style: str,
+        *,
+        list_style: str | None = None,
+    ) -> dict[str, Any]:
+        props = {"text": text, "style": style}
+        if list_style is not None:
+            props["listStyle"] = list_style
         return {
             "command": "add",
             "parent": "/body",
             "type": "paragraph",
-            "props": {"text": text, "style": style},
+            "props": props,
         }
 
     @staticmethod
-    def _json_envelope(operation: str, output: str) -> Mapping[str, Any]:
+    def _json_envelope(
+        operation: str,
+        output: str,
+        *,
+        allow_validation_success_message: bool = False,
+    ) -> Mapping[str, Any]:
         try:
             response = json.loads(output)
         except json.JSONDecodeError as error:
@@ -398,6 +427,8 @@ class OfficeCLIArtifactRenderer:
             detail = OfficeCLIArtifactRenderer._response_detail(response)
             raise OfficeCLIError(f"OfficeCLI {operation} failed: {detail}")
         data = response.get("data")
+        if allow_validation_success_message and data == "Validation passed: no errors found.":
+            return {"count": 0, "errors": []}
         if not isinstance(data, Mapping):
             raise OfficeCLIError(f"OfficeCLI {operation} response is missing structured data")
         return data
@@ -492,8 +523,13 @@ class OfficeCLIArtifactRenderer:
     def _validate_issues(
         issue_data: Mapping[str, Any],
     ) -> list[Mapping[str, Any]]:
-        count = issue_data.get("Count")
-        issues = issue_data.get("Issues")
+        upper_collection = all(key in issue_data for key in ("Count", "Issues"))
+        lower_collection = all(key in issue_data for key in ("count", "issues"))
+        if upper_collection == lower_collection:
+            raise OfficeCLIError("OfficeCLI issue inspection returned an unrecognized result")
+        count_key, issues_key = ("Count", "Issues") if upper_collection else ("count", "issues")
+        count = issue_data[count_key]
+        issues = issue_data[issues_key]
         if type(count) is not int or count < 0 or not isinstance(issues, list):
             raise OfficeCLIError("OfficeCLI issue inspection returned an unrecognized result")
         if count != len(issues):
@@ -503,16 +539,24 @@ class OfficeCLIArtifactRenderer:
         for issue in issues:
             if not isinstance(issue, Mapping):
                 raise OfficeCLIError("OfficeCLI issue inspection returned a malformed issue")
-            if any(key not in issue for key in ("Severity", "Message", "Path")):
+            upper_fields = all(key in issue for key in ("Severity", "Message", "Path"))
+            lower_fields = all(key in issue for key in ("severity", "message", "path"))
+            if upper_fields == lower_fields:
                 raise OfficeCLIError("OfficeCLI issue inspection returned a malformed issue")
+            severity_key, message_key, path_key = (
+                ("Severity", "Message", "Path") if upper_fields else ("severity", "message", "path")
+            )
+            severity = issue[severity_key]
+            message = issue[message_key]
+            path = issue[path_key]
             if (
-                not isinstance(issue["Severity"], str)
-                or not issue["Severity"]
-                or not isinstance(issue["Message"], str)
-                or not (isinstance(issue["Path"], str) or issue["Path"] is None)
+                not isinstance(severity, str)
+                or not severity
+                or not isinstance(message, str)
+                or not (isinstance(path, str) or path is None)
             ):
                 raise OfficeCLIError("OfficeCLI issue inspection returned a malformed issue")
-            structured.append(issue)
+            structured.append({"Severity": severity, "Message": message, "Path": path})
         return structured
 
     @staticmethod

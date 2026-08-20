@@ -1,0 +1,51 @@
+{
+    "schema_version": 1,
+    "source_repository": "https://github.com/iOfficeAI/OfficeCLI",
+    "source_commit": "459b1a473faf33f2f52e697ac6d265a3f67b176a",
+    "license": "Apache-2.0",
+    "license_url": "https://github.com/iOfficeAI/OfficeCLI/blob/459b1a473faf33f2f52e697ac6d265a3f67b176a/LICENSE",
+    "review_date": "2026-08-20",
+    "derivation_tool": {
+        "name": "OfficeCLI",
+        "version": "1.0.143",
+        "updates_disabled": true
+    },
+    "templates": {
+        "powerpoint": {
+            "bundled_path": "default-qbr.pptx",
+            "original_path": "examples/budget_review_v2.pptx",
+            "source_url": "https://github.com/iOfficeAI/OfficeCLI/blob/459b1a473faf33f2f52e697ac6d265a3f67b176a/examples/budget_review_v2.pptx",
+            "upstream_sha256": "7e53078d284595be7ae1e3aaf746c2d7c38a031023e632fe33b5ab67ac8240ca",
+            "bundled_sha256": "f7ef99edbf0430ad42856dc2764d237be0b189cda7d6bd316f18ad8847929649",
+            "modifications": [
+                "Removed all eight visible starter slides through OfficeCLI while retaining the upstream master and layouts as a content-empty reusable shell.",
+                "Applied an Arial navy-and-teal theme, pale blue-gray master background, and non-text accent rail through first-class OfficeCLI operations.",
+                "Eliminated prompt, placeholder, sample-number, chart, and branding leakage under OfficeCLI append semantics."
+            ]
+        },
+        "word": {
+            "bundled_path": "default-qbr.docx",
+            "original_path": "assets/showcase/annual-report.docx",
+            "source_url": "https://github.com/iOfficeAI/OfficeCLI/blob/459b1a473faf33f2f52e697ac6d265a3f67b176a/assets/showcase/annual-report.docx",
+            "upstream_sha256": "2a54626492abbbecaafd416c3960b79e461b14441ee6ca3fb9339a9d1fca3dcb",
+            "bundled_sha256": "96e75ebef5db057ef0fff9ed925e73f278a4260a2f7439cb6c1e7e92ed882357",
+            "modifications": [
+                "Regenerated a deterministic non-minimal en-US blank DOCX shell through OfficeCLI 1.0.143 because the vetted upstream example did not contain a styles part.",
+                "Defined distinct Normal, Title, Subtitle, Heading1, ListBullet, and Caption paragraph styles through first-class OfficeCLI operations while retaining an empty document body.",
+                "Recorded the vetted upstream example and exact upstream hash as the reviewed design source; no upstream starter content, branding, or claims remain in the bundled shell."
+            ]
+        }
+    },
+    "verification": {
+        "exact_upstream_hashes": true,
+        "ooxml_zip_integrity": true,
+        "macros_or_vba_parts": false,
+        "external_link_parts": false,
+        "external_relationships": false,
+        "embedded_executables": false,
+        "secret_scan": "clean",
+        "derived_with_officecli_only": true,
+        "officecli_validation_note": "The zero-slide PPTX and content-empty DOCX both validate cleanly with OfficeCLI 1.0.143.",
+        "visual_review": "Actual OfficeCLI 1.0.143 generated artifacts were rendered and inspected on 2026-08-20: all three PowerPoint slides show a pale blue-gray background, navy-and-teal accent treatment, and clear title, body, and source hierarchy; the one-page Word output shows distinct Title, Subtitle, Heading1, ListBullet, and Caption styling. No clipping, overlap, scaffold text, or branding was present."
+    }
+}
