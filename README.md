@@ -1,6 +1,7 @@
 # Customer Success Agent Framework (CSAF)
 
 **This is still work in progress and not the final form.**
+
 CSAF is an open-source, vendor-neutral foundation for reusable AI skills for
 Customer Success Managers, Technical Account Managers, Solutions Engineers,
 and other customer-facing teams.
