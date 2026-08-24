@@ -120,6 +120,22 @@ def test_download_streams_and_atomically_replaces_after_verification(tmp_path: P
     assert not list(tmp_path.glob(".asset.bin.*.tmp"))
 
 
+def test_network_forbidden_sentinel_rejects_external_download_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = False
+
+    def opener(*_: object, **__: object) -> FakeResponse:
+        nonlocal opened
+        opened = True
+        return FakeResponse(b"payload")
+
+    monkeypatch.setenv("CSAF_INSTALLER_NETWORK_FORBIDDEN", "1")
+    with pytest.raises(SetupError, match="network access is disabled"):
+        download_verified(_asset(b"payload"), tmp_path / "asset", opener=opener)
+    assert opened is False
+
+
 def test_download_passes_finite_default_timeout_to_opener(tmp_path: Path) -> None:
     body = b"payload"
     observed: list[float] = []

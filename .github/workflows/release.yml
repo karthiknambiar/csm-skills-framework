@@ -1,0 +1,195 @@
+name: Native release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip --version
+      - run: python -m pip install --require-hashes -r requirements/release-tools.txt
+      - run: python -c "import importlib.metadata as m; assert m.version('build') == '1.3.0'; assert m.version('hatchling') == '1.27.0'; assert m.version('cryptography') == '46.0.3'"
+      - name: Check tag, package, plugin, and marketplace version agreement
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, tomllib
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          root = pathlib.Path(".")
+          project = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+          plugin = json.loads((root / "plugins/csaf/.claude-plugin/plugin.json").read_text())["version"]
+          market = json.loads((root / ".claude-plugin/marketplace.json").read_text())["plugins"][0]["version"]
+          assert project == plugin == market == version
+          PY
+      - run: python scripts/check_secrets.py --worktree --tracked --history
+      - run: python -m build --wheel --no-isolation
+      - run: python scripts/build_native_release.py --version "${GITHUB_REF_NAME#v}" --output dist/native
+      - name: Verify SHA256SUMS
+        run: |
+          cd "dist/native/${GITHUB_REF_NAME#v}"
+          sha256sum --check SHA256SUMS
+      - name: Stage flat release artifact
+        run: |
+          mkdir release-assets
+          cp "dist/native/${GITHUB_REF_NAME#v}/"* release-assets/
+      - name: Recursively scan packaged ZIP and wheel content for secrets
+        shell: python
+        run: |
+          import pathlib
+          import subprocess
+          import sys
+          packages = sorted(pathlib.Path("release-assets").glob("*.zip"))
+          assert packages
+          for package in packages:
+              subprocess.run([sys.executable, "scripts/check_secrets.py", "--package", str(package)], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-release
+          path: release-assets/*
+
+  validate-platform:
+    needs: assemble
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux-arm64, linux-x64, macos-arm64, macos-x64, windows-arm64, windows-x64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-release
+          path: release
+      - name: Deeply validate exact cross-built skill, plugin, manifest, runtime, lock, and wheels
+        run: python scripts/build_native_release.py --verify-release release --platform ${{ matrix.platform }}
+  verify-native-install:
+    needs: assemble
+    name: Verify native install (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux-x64
+            smoke-python: ../.native-smoke/bin/python
+            smoke-csaf: .native-smoke/bin/csaf
+            verifier-python: .native-smoke/bin/python
+          - runner: macos-latest
+            platform: macos-x64
+            smoke-python: ../.native-smoke/bin/python
+            smoke-csaf: .native-smoke/bin/csaf
+            verifier-python: .native-smoke/bin/python
+          - runner: windows-latest
+            platform: windows-x64
+            smoke-python: ../.native-smoke/Scripts/python.exe
+            smoke-csaf: .native-smoke/Scripts/csaf.exe
+            verifier-python: .native-smoke/Scripts/python.exe
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-release
+          path: release
+      - id: version
+        name: Derive the exact tag version
+        shell: python
+        run: |
+          import os
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"version={os.environ['GITHUB_REF_NAME'].removeprefix('v')}", file=output)
+      - run: python -m zipfile -e release/csaf-runtime-${{ matrix.platform }}-${{ steps.version.outputs.version }}.zip .native-bundle
+      - run: python -m venv .native-smoke
+      - name: Install the private console from the release bundle only
+        working-directory: .native-bundle
+        run: ${{ matrix.smoke-python }} -m pip install --no-index --no-deps --require-hashes --find-links wheelhouse -r requirements.lock
+      - name: Pre-stage verifier TLS dependency before network isolation
+        run: ${{ matrix.verifier-python }} -m pip install --require-hashes -r requirements/release-tools.txt
+      - name: Pre-stage exact pinned uv and OfficeCLI assets
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import urllib.request
+
+          platform = "${{ matrix.platform }}"
+          dependencies = json.loads(pathlib.Path("installer/dependencies.json").read_text("utf-8"))
+          destination = pathlib.Path(".native-assets")
+          destination.mkdir()
+          for dependency, filename in (("uv", "uv-archive"), ("officecli", "officecli")):
+              record = dependencies[dependency]["assets"][platform]
+              target = destination / filename
+              temporary = target.with_suffix(".part")
+              digest = hashlib.sha256()
+              total = 0
+              with urllib.request.urlopen(record["url"], timeout=120) as response, temporary.open("xb") as output:
+                  while chunk := response.read(1024 * 1024):
+                      total += len(chunk)
+                      if total > record["size"]:
+                          raise RuntimeError(f"{dependency} exceeded its pinned size")
+                      digest.update(chunk)
+                      output.write(chunk)
+              if total != record["size"] or digest.hexdigest() != record["sha256"]:
+                  raise RuntimeError(f"{dependency} did not match its pinned identity")
+              os.replace(temporary, target)
+      - name: Require READY activated launcher inside a loopback-only Linux network namespace
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo unshare --net --mount-proc bash -euo pipefail -c '
+            ip link set lo up
+            export PYTHONPATH="$1/src"
+            exec "$2" scripts/verify_native_install.py \
+              --release-dir release \
+              --dependencies installer/dependencies.json \
+              --platform linux-x64 \
+              --uv .native-assets/uv-archive \
+              --officecli .native-assets/officecli \
+              --csaf .native-smoke/bin/csaf
+          ' -- "$GITHUB_WORKSPACE" "${{ matrix.verifier-python }}"
+      - name: Require READY activated launcher with supplemental application egress guard
+        if: runner.os != 'Linux'
+        run: >-
+          ${{ matrix.verifier-python }} scripts/verify_native_install.py
+          --release-dir release
+          --dependencies installer/dependencies.json
+          --platform ${{ matrix.platform }}
+          --uv .native-assets/uv-archive
+          --officecli .native-assets/officecli
+          --csaf ${{ matrix.smoke-csaf }}
+  publish:
+    needs: [assemble, validate-platform, verify-native-install]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-release
+          path: release
+      - run: python scripts/check_secrets.py --worktree --tracked --history
+      - uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        with:
+          files: release/*
+          fail_on_unmatched_files: true

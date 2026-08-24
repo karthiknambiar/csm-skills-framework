@@ -6,6 +6,7 @@ import bz2
 import gzip
 import hashlib
 import hmac
+import ipaddress
 import json
 import lzma
 import math
@@ -92,6 +93,18 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, message, headers, redirect_url)
 
 
+def _loopback_https(url: str) -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme.casefold() != "https" or parsed.hostname is None:
+        return False
+    if parsed.hostname.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(parsed.hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def download_verified(
     asset: ReleaseAsset,
     destination: Path,
@@ -102,6 +115,10 @@ def download_verified(
     """Stream an HTTPS asset to a private file and activate it after verification."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise SetupError("download timeout must be finite and positive")
+    if os.environ.get("CSAF_INSTALLER_NETWORK_FORBIDDEN") == "1" and not _loopback_https(
+        str(asset.url)
+    ):
+        raise SetupError("network access is disabled except for loopback HTTPS")
     target = Path(destination)
     temporary: Path | None = None
     try:
@@ -113,8 +130,13 @@ def download_verified(
             else opener(request, timeout=timeout)
         )
         with response_context as response:
-            if urlsplit(response.geturl()).scheme.casefold() != "https":
+            response_url = response.geturl()
+            if urlsplit(response_url).scheme.casefold() != "https":
                 raise SetupError("asset redirect must remain HTTPS")
+            if os.environ.get("CSAF_INSTALLER_NETWORK_FORBIDDEN") == "1" and not _loopback_https(
+                response_url
+            ):
+                raise SetupError("network access is disabled except for loopback HTTPS")
             content_length = _header(response, "Content-Length")
             if content_length is not None:
                 try:

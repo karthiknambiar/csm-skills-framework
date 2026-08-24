@@ -81,6 +81,7 @@ _RUNTIME_BUNDLE_LIMITS = AssetLimits(
     max_total_bytes=1024 * 1024 * 1024,
 )
 _RUNTIME_MEMBER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_RUNTIME_CSAF_WHEEL = re.compile(r"^csaf-([0-9]+[.][0-9]+[.][0-9]+)-py3-none-any[.]whl$")
 _RUNTIME_REQUIREMENT = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_.-]*==[^\s]+ --hash=sha256:([0-9a-f]{64})$"
 )
@@ -495,9 +496,11 @@ def _validated_runtime_bundle(
         declared = set(files)
         if names != declared | {"runtime-bundle.json"}:
             raise SetupError("runtime bundle members do not match the manifest")
-        if not {"csaf-runtime.whl", "requirements.lock"} <= declared:
+        runtime_wheels = sorted(name for name in declared if _RUNTIME_CSAF_WHEEL.fullmatch(name))
+        expected_runtime_wheel = f"csaf-{expected_version}-py3-none-any.whl"
+        if runtime_wheels != [expected_runtime_wheel] or "requirements.lock" not in declared:
             raise SetupError("runtime bundle is incomplete")
-        wheel_names = declared - {"csaf-runtime.whl", "requirements.lock"}
+        wheel_names = declared - {expected_runtime_wheel, "requirements.lock"}
         if not wheel_names or any(
             not name.startswith("wheelhouse/")
             or not name.endswith(".whl")
@@ -535,8 +538,8 @@ def _validated_runtime_bundle(
         lines = lock_text.splitlines()
         if not lines or any(not line or line != line.strip() for line in lines):
             raise SetupError("runtime bundle requirements lock is invalid")
-        runtime_hash = files["csaf-runtime.whl"]["sha256"]
-        if not lines or lines[0] != f"./csaf-runtime.whl --hash=sha256:{runtime_hash}":
+        runtime_hash = files[expected_runtime_wheel]["sha256"]
+        if lines[0] != f"./{expected_runtime_wheel} --hash=sha256:{runtime_hash}":
             raise SetupError("runtime bundle requirements lock is invalid")
         dependency_hashes: list[str] = []
         for line in lines[1:]:
@@ -621,6 +624,7 @@ def _install_runtime(
     try:
         result = runner(
             arguments,
+            cwd=bundle_root,
             shell=False,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

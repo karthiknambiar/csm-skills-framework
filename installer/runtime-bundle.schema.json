@@ -21,12 +21,12 @@
     },
     "files": {
       "type": "object",
-      "required": ["csaf-runtime.whl", "requirements.lock"],
+      "required": ["requirements.lock"],
       "properties": {
-        "csaf-runtime.whl": { "$ref": "#/$defs/file" },
         "requirements.lock": { "$ref": "#/$defs/file" }
       },
       "patternProperties": {
+        "^csaf-[0-9]+\\.[0-9]+\\.[0-9]+-py3-none-any\\.whl$": { "$ref": "#/$defs/wheelFile" },
         "^wheelhouse/[A-Za-z0-9][A-Za-z0-9_.-]*\\.whl$": { "$ref": "#/$defs/wheelFile" }
       },
       "additionalProperties": false,

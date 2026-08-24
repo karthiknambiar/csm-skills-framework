@@ -161,6 +161,10 @@ function Read-StrictJson([string]$Path) {
     if ($script:JsonPosition -ne $script:JsonText.Length) {
         throw [FormatException]::new("trailing JSON content")
     }
+    $convertFromJson = Get-Command ConvertFrom-Json
+    if ($convertFromJson.Parameters.ContainsKey("DateKind")) {
+        return $script:JsonText | ConvertFrom-Json -DateKind String
+    }
     return $script:JsonText | ConvertFrom-Json
 }
 
@@ -253,8 +257,10 @@ try {
             "verified_checksums", "adapter_targets", "officecli_version", "officecli_path",
             "officecli_sha256", "officecli_installed_by_csaf", "installed_at", "updated_at"
         ))) { Stop-BootstrapRequired }
-    if ($current.schema_version -isnot [int] -or $current.schema_version -ne 1 -or
-        $state.schema_version -isnot [int] -or $state.schema_version -ne 1 -or
+    if (($current.schema_version -isnot [int] -and $current.schema_version -isnot [long]) -or
+        $current.schema_version -ne 1 -or
+        ($state.schema_version -isnot [int] -and $state.schema_version -isnot [long]) -or
+        $state.schema_version -ne 1 -or
         $current.active_version -isnot [string] -or
         $current.active_version -notmatch '^\d+\.\d+\.\d+$' -or
         $state.active_version -isnot [string] -or
@@ -333,6 +339,9 @@ try {
     $env:CSAF_DATA_ROOT = $dataRoot
     $env:CSAF_OFFICECLI = $officecliPath
     $env:OFFICECLI_SKIP_UPDATE = "1"
+    if (Test-Path Variable:PSNativeCommandArgumentPassing) {
+        $PSNativeCommandArgumentPassing = "Legacy"
+    }
 
     $updateOutput = @(& $runtimeLauncher "setup" "check-update" 2>$null) -join "`n"
     if ($LASTEXITCODE -eq 0 -and $updateOutput -match '(?im)^Update available\.') {

@@ -62,7 +62,8 @@ def test_runtime_bundle_schema_is_strict_for_all_six_platforms() -> None:
     assert schema["required"] == ["schema_version", "version", "platform", "files"]
     assert schema["properties"]["platform"]["enum"] == sorted(PLATFORMS)
     files = schema["properties"]["files"]
-    assert files["required"] == ["csaf-runtime.whl", "requirements.lock"]
+    assert files["required"] == ["requirements.lock"]
+    assert "^csaf-" in "".join(files["patternProperties"])
     assert files["additionalProperties"] is False
 
 
@@ -286,6 +287,39 @@ def test_powershell_dry_run_is_offline_and_has_no_filesystem_effects(tmp_path: P
     assert "Targets:" in result.stdout
     assert str(data_root) in result.stdout
     assert not Path(data_root).exists()
+
+
+def test_powershell_whatif_is_an_offline_no_write_dry_run(tmp_path: Path) -> None:
+    executable = _powershell()
+    if executable is None:
+        pytest.skip("PowerShell is unavailable")
+    data_root = tmp_path / "CSAF what-if"
+    result = subprocess.run(
+        [
+            executable,
+            "-NoProfile",
+            "-File",
+            str(INSTALLER / "install.ps1"),
+            "-WhatIf",
+            "-Platform",
+            "windows-x64",
+            "-ManifestPath",
+            str(MANIFEST),
+            "-DataRoot",
+            str(data_root),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        env={**os.environ, "CSAF_INSTALLER_NETWORK_FORBIDDEN": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Dry run complete" in result.stdout
+    assert not data_root.exists()
 
 
 def test_shell_syntax_and_dry_run_are_offline() -> None:
@@ -832,6 +866,7 @@ def _write_bootstrap_bundle(
     version: str = "1.2.3",
 ) -> None:
     runtime = b"dummy-runtime-wheel"
+    runtime_name = f"csaf-{version}-py3-none-any.whl"
     dependency = b"dummy-dependency-wheel"
     dependency_name = (
         "wheelhouse/../../escaped.whl"
@@ -839,14 +874,14 @@ def _write_bootstrap_bundle(
         else "wheelhouse/dummy_dependency-1.0.0-py3-none-any.whl"
     )
     lock = (
-        "./csaf-runtime.whl "
+        f"./{runtime_name} "
         f"--hash=sha256:{hashlib.sha256(runtime).hexdigest()}\n"
         f"dummy-dependency==1.0.0 --hash=sha256:{hashlib.sha256(dependency).hexdigest()}\n"
     ).encode()
     if mutation == "lock-option":
         lock = b"--extra-index-url https://registry.example/simple\n"
     payloads = {
-        "csaf-runtime.whl": runtime,
+        runtime_name: runtime,
         "requirements.lock": lock,
         dependency_name: dependency,
     }
@@ -862,7 +897,7 @@ def _write_bootstrap_bundle(
         },
     }
     if mutation == "hash":
-        manifest["files"]["csaf-runtime.whl"]["sha256"] = "0" * 64
+        manifest["files"][runtime_name]["sha256"] = "0" * 64
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("runtime-bundle.json", json.dumps(manifest))
         for member_name, data in payloads.items():

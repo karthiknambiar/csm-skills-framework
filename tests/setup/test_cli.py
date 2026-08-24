@@ -914,15 +914,16 @@ def _runtime_bundle(
     extra_member: tuple[str, bytes] | None = None,
 ) -> Path:
     runtime = b"dummy csaf wheel"
+    runtime_name = f"csaf-{version}-py3-none-any.whl"
     dependency = b"dummy dependency wheel"
     runtime_hash = hashlib.sha256(runtime).hexdigest()
     dependency_hash = hashlib.sha256(dependency).hexdigest()
     requirements = (
-        f"./csaf-runtime.whl --hash=sha256:{runtime_hash}\n"
+        f"./{runtime_name} --hash=sha256:{runtime_hash}\n"
         f"dummy-dependency==1.0.0 --hash=sha256:{dependency_hash}\n"
     ).encode()
     members = {
-        "csaf-runtime.whl": runtime,
+        runtime_name: runtime,
         "requirements.lock": requirements,
         "wheelhouse/dummy_dependency-1.0.0-py3-none-any.whl": dependency,
     }
@@ -994,6 +995,7 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
         "--requirement",
         str(destination.parent / ".runtime-bundle" / "requirements.lock"),
     ]
+    assert calls[0][1]["cwd"] == destination.parent / ".runtime-bundle"
     assert calls[0][1]["shell"] is False
     assert calls[0][1]["stdin"] is subprocess.DEVNULL
     assert calls[0][1]["env"]["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")

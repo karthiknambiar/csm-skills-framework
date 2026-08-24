@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import dataclasses
+import io
 import stat
 import subprocess
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +28,317 @@ def _secret(prefix: str, tail: str) -> str:
     return prefix + tail
 
 
+def _zip_bytes(members: list[tuple[str, bytes]]) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in members:
+            archive.writestr(name, content)
+    return output.getvalue()
+
+
+def test_package_scan_finds_secret_in_nested_wheel_without_extracting(tmp_path: Path) -> None:
+    secret = _secret("ghp_", "NestedWheelDummyToken012345678901234567890")
+    wheel = _zip_bytes([("package/config.txt", (secret + "\n").encode())])
+    package = tmp_path / "release.zip"
+    package.write_bytes(_zip_bytes([("runtime/dependency.whl", wheel)]))
+
+    assert secret_scan.scan_package(package) == [
+        Finding("release.zip!runtime/dependency.whl!package/config.txt", 1, "github_token")
+    ]
+
+
+def test_package_scan_finds_secret_in_renamed_nested_archive(tmp_path: Path) -> None:
+    secret = _secret("ghp_", "RenamedArchiveDummyToken012345678901234567")
+    nested = _zip_bytes([("config.txt", secret.encode())])
+    package = tmp_path / "release.zip"
+    package.write_bytes(_zip_bytes([("payload.bin", nested)]))
+
+    assert secret_scan.scan_package(package) == [
+        Finding("release.zip!payload.bin!config.txt", 1, "github_token")
+    ]
+
+
+def test_package_scan_finds_secret_after_repository_text_size_limit(tmp_path: Path) -> None:
+    secret = _secret("ghp_", "LargeArchiveDummyToken012345678901234567890")
+    prefix = ("safe line\n" * ((MAX_FILE_BYTES // 10) + 2)).encode()
+    package = tmp_path / "large-text.zip"
+    package.write_bytes(_zip_bytes([("large.txt", prefix + secret.encode())]))
+
+    assert secret_scan.scan_package(package) == [
+        Finding(
+            "large-text.zip!large.txt",
+            prefix.count(b"\n") + 1,
+            "github_token",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "member",
+    [
+        "CON.txt",
+        "folder/NUL.json",
+        "stream.txt:payload",
+        "trailing-dot.",
+        "trailing-space ",
+        "raw/./dot.txt",
+        "control-\x01.txt",
+    ],
+)
+def test_package_scan_rejects_cross_platform_unsafe_member_names(
+    tmp_path: Path, member: str
+) -> None:
+    package = tmp_path / "unsafe-name.zip"
+    package.write_bytes(_zip_bytes([(member, b"clean")]))
+
+    with pytest.raises(secret_scan.SecretScanError, match="member path invalid"):
+        secret_scan.scan_package(package)
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [("Folder/File.txt", b"one"), ("folder/file.TXT", b"two")],
+        [("caf\u00e9.txt", b"one"), ("cafe\u0301.txt", b"two")],
+    ],
+)
+def test_package_scan_rejects_normalized_member_name_collisions(
+    tmp_path: Path, members: list[tuple[str, bytes]]
+) -> None:
+    package = tmp_path / "colliding-names.zip"
+    package.write_bytes(_zip_bytes(members))
+
+    with pytest.raises(secret_scan.SecretScanError, match="member path invalid"):
+        secret_scan.scan_package(package)
+
+
+def test_cli_package_mode_reports_nested_finding_without_secret(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    secret = _secret("ghp_", "CliPackageDummyToken0123456789012345678901")
+    package = tmp_path / "artifact.zip"
+    package.write_bytes(_zip_bytes([("payload.txt", secret.encode())]))
+
+    assert main(["--package", str(package)], repo=tmp_path) == 1
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert "artifact.zip!payload.txt" in output
+
+
+def test_package_scan_counts_directory_members_toward_global_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "many-members.zip"
+    package.write_bytes(_zip_bytes([("one/", b""), ("two/", b"")]))
+    monkeypatch.setattr(secret_scan, "MAX_ARCHIVE_MEMBERS", 1)
+
+    with pytest.raises(secret_scan.SecretScanError, match="archive scan limit exceeded"):
+        secret_scan.scan_package(package)
+
+
+def test_package_scan_enforces_member_size_and_total_byte_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "bounded.zip"
+    package.write_bytes(_zip_bytes([("one.txt", b"a"), ("two.txt", b"b")]))
+
+    monkeypatch.setattr(secret_scan, "MAX_ARCHIVE_MEMBER_BYTES", 0)
+    with pytest.raises(secret_scan.SecretScanError, match="member size limit"):
+        secret_scan.scan_package(package)
+
+    monkeypatch.setattr(secret_scan, "MAX_ARCHIVE_MEMBER_BYTES", 1)
+    monkeypatch.setattr(secret_scan, "MAX_ARCHIVE_TOTAL_BYTES", 1)
+    with pytest.raises(secret_scan.SecretScanError, match="archive scan limit"):
+        secret_scan.scan_package(package)
+
+
+def test_package_scan_enforces_nesting_and_member_path_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = _zip_bytes([("payload.txt", b"clean")])
+    package = tmp_path / "nested.zip"
+    package.write_bytes(_zip_bytes([("inner.whl", nested)]))
+    monkeypatch.setattr(secret_scan, "MAX_ARCHIVE_DEPTH", 0)
+
+    with pytest.raises(secret_scan.SecretScanError, match="nesting limit"):
+        secret_scan.scan_package(package)
+
+    unsafe = tmp_path / "unsafe.zip"
+    unsafe.write_bytes(_zip_bytes([("../outside.txt", b"clean")]))
+    with pytest.raises(secret_scan.SecretScanError, match="member path invalid"):
+        secret_scan.scan_package(unsafe)
+
+    long_path = tmp_path / "long-path.zip"
+    long_path.write_bytes(_zip_bytes([("lengthy.txt", b"clean")]))
+    monkeypatch.setattr(secret_scan, "MAX_ARCHIVE_PATH_CHARS", 5)
+    with pytest.raises(secret_scan.SecretScanError, match="member path invalid"):
+        secret_scan.scan_package(long_path)
+
+
+def test_package_scan_bounds_each_decompression_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = (b"safe line\n" * ((secret_scan.MAX_ARCHIVE_MEMBER_BYTES // 10) - 1)) + b"safe\n"
+    package = tmp_path / "bounded-read.zip"
+    package.write_bytes(_zip_bytes([("payload.txt", content)]))
+    original_open = zipfile.ZipFile.open
+    read_sizes: list[int] = []
+
+    class BoundedReader:
+        def __init__(self, wrapped: object) -> None:
+            self.wrapped = wrapped
+
+        def __enter__(self) -> BoundedReader:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.wrapped.close()  # type: ignore[attr-defined]
+
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            return self.wrapped.read(size)  # type: ignore[attr-defined,no-any-return]
+
+    def spy_open(archive: zipfile.ZipFile, *args: object, **kwargs: object) -> BoundedReader:
+        return BoundedReader(original_open(archive, *args, **kwargs))
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", spy_open)
+
+    assert secret_scan.scan_package(package) == []
+    assert read_sizes
+    assert -1 not in read_sizes
+    assert max(read_sizes) <= secret_scan.ARCHIVE_READ_CHUNK_BYTES
+
+
+def test_package_scan_finds_secret_crossing_stream_chunk_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(secret_scan, "ARCHIVE_READ_CHUNK_BYTES", 64)
+    secret = _secret("ghp_", "ChunkBoundaryDummyToken012345678901234567890")
+    prefix = b"safe\n" + (b"x" * 54) + b" "
+    package = tmp_path / "chunked.zip"
+    package.write_bytes(_zip_bytes([("payload.txt", prefix + secret.encode() + b"\n")]))
+
+    assert secret_scan.scan_package(package) == [
+        Finding("chunked.zip!payload.txt", 2, "github_token")
+    ]
+
+
+def test_streaming_scan_retains_true_match_crossing_overlap_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(secret_scan, "ARCHIVE_SCAN_OVERLAP_CHARS", 64)
+    secret = _secret("ghp_", "OverlapCommitDummyToken012345678901234567890")
+    scanner = secret_scan._StreamingTextScanner("payload.txt", None)
+
+    scanner.feed(("safe text " + secret + " " + ("x" * 35)).encode())
+    scanner.feed(b"y" * 64)
+
+    assert scanner.finish() == [Finding("payload.txt", 1, "github_token")]
+
+
+def test_streaming_overlap_allows_one_character_for_unsplit_crlf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(secret_scan, "ARCHIVE_SCAN_OVERLAP_CHARS", 64)
+    scanner = secret_scan._StreamingTextScanner("payload.txt", None)
+
+    scanner.feed((("x" * 9) + "\r\n" + ("y" * 63)).encode())
+
+    assert scanner.finish() == []
+
+
+def test_streaming_scan_defers_match_until_boundary_lookahead() -> None:
+    scanner = secret_scan._StreamingTextScanner("payload.txt", None)
+
+    scanner.feed((_secret("ghp_", "A" * 20)).encode())
+    scanner.feed(b"_suffix")
+
+    assert scanner.finish() == []
+
+
+def test_package_scan_fails_closed_at_global_finding_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(secret_scan, "MAX_FINDINGS", 2)
+    secret = _secret("ghp_", "RepeatedDummyToken012345678901234567890")
+    package = tmp_path / "many-findings.zip"
+    package.write_bytes(_zip_bytes([("payload.txt", ((secret + "\n") * 3).encode())]))
+
+    with pytest.raises(secret_scan.SecretScanError, match="finding limit exceeded"):
+        secret_scan.scan_package(package)
+
+
+@pytest.mark.parametrize("binary_tail", [b"\x00binary", b"\xffbinary"])
+def test_streaming_binary_classification_discards_provisional_findings_before_budget(
+    monkeypatch: pytest.MonkeyPatch, binary_tail: bytes
+) -> None:
+    monkeypatch.setattr(secret_scan, "MAX_FINDINGS", 1)
+    secret = _secret("ghp_", "ProvisionalDummyToken012345678901234567890")
+    budget = secret_scan._FindingBudget()
+    scanner = secret_scan._StreamingTextScanner("payload.bin", None, budget)
+
+    scanner.feed(((secret + "\n") * 2).encode())
+    scanner.feed(binary_tail)
+
+    assert scanner.finish() == []
+    assert budget.count == 0
+
+
+def test_streaming_text_defers_bounded_overflow_until_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(secret_scan, "MAX_FINDINGS", 2)
+    secret = _secret("ghp_", "PendingCapDummyToken012345678901234567890")
+    budget = secret_scan._FindingBudget()
+    scanner = secret_scan._StreamingTextScanner("payload.txt", None, budget)
+
+    scanner.feed(((secret + "\n") * 20).encode())
+
+    assert len(scanner.findings) == secret_scan.MAX_FINDINGS + 1
+    assert budget.count == 0
+    with pytest.raises(secret_scan.SecretScanError, match="finding limit exceeded"):
+        scanner.finish()
+    assert budget.count == 0
+
+
+def test_package_scan_spools_nested_archive_with_bounded_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = _secret("ghp_", "NestedSpoolDummyToken012345678901234567890")
+    nested = _zip_bytes([("config.txt", (secret + "\n").encode())])
+    package = tmp_path / "spooled.zip"
+    package.write_bytes(_zip_bytes([("renamed.bin", nested)]))
+    original_spool = secret_scan.tempfile.SpooledTemporaryFile
+    thresholds: list[int] = []
+
+    def spy_spool(*args: object, **kwargs: object) -> object:
+        thresholds.append(int(kwargs["max_size"]))
+        return original_spool(*args, **kwargs)
+
+    monkeypatch.setattr(secret_scan.tempfile, "SpooledTemporaryFile", spy_spool)
+
+    assert secret_scan.scan_package(package) == [
+        Finding("spooled.zip!renamed.bin!config.txt", 1, "github_token")
+    ]
+    assert thresholds
+    assert max(thresholds) <= secret_scan.ARCHIVE_SPOOL_MEMORY_BYTES
+
+
+def test_package_scan_rejects_oversized_or_malformed_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package.zip"
+    package.write_bytes(_zip_bytes([("clean.txt", b"clean")]))
+    monkeypatch.setattr(secret_scan, "MAX_PACKAGE_BYTES", package.stat().st_size - 1)
+    with pytest.raises(secret_scan.SecretScanError, match="package file invalid"):
+        secret_scan.scan_package(package)
+
+    malformed = tmp_path / "malformed.whl"
+    malformed.write_bytes(b"not a wheel")
+    with pytest.raises(secret_scan.SecretScanError, match="archive could not be scanned"):
+        secret_scan.scan_package(malformed)
+
+
 @pytest.mark.parametrize(
     ("value", "category"),
     [
@@ -39,6 +352,7 @@ def _secret(prefix: str, tail: str) -> str:
         (_secret("rk_" + "live_", "R" * 24), "stripe_key"),
         (_secret("rk_" + "test_", "T" * 24), "stripe_key"),
         ("SERVICE_API_KEY=" + "DummyProviderCredential012345", "provider_credential"),
+        ('AUTH_TOKEN="' + "DummyQuotedProviderCredential012345" + '"', "provider_credential"),
     ],
 )
 def test_scan_text_detects_credential_shapes_with_line_numbers(value: str, category: str) -> None:
@@ -50,7 +364,10 @@ def test_scan_text_detects_credential_shapes_with_line_numbers(value: str, categ
 def test_scan_text_detects_private_key_header_but_not_generic_terms() -> None:
     header = "-----BEGIN " + "PRIVATE KEY-----"
 
-    generic_terms = "Set API_KEY in your environment.\nAPI key is optional here.\n"
+    generic_terms = (
+        "Set API_KEY in your environment.\nAPI key is optional here.\n"
+        "api_key = request.query_params.get(self.model.name)\n"
+    )
     assert scan_text("README.md", generic_terms) == []
     assert scan_text("identity.pem", f"note\n{header}\n") == [
         Finding("identity.pem", 2, "private_key")
@@ -140,6 +457,20 @@ def test_repository_modes_are_deterministic_deduplicated_and_safe(tmp_path: Path
         Finding("untracked config.txt", 1, "slack_token"),
     ]
     assert scan_repository(repo, worktree=True, tracked=True, history=False) == findings
+
+
+def test_repository_scan_fails_closed_at_global_finding_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "many-findings"
+    _init_repo(repo)
+    monkeypatch.setattr(secret_scan, "MAX_FINDINGS", 2)
+    secret = _secret("ghp_", "RepositoryCapDummyToken012345678901234567")
+    for index in range(3):
+        (repo / f"credential-{index}.txt").write_text(secret, encoding="utf-8")
+
+    with pytest.raises(secret_scan.SecretScanError, match="finding limit exceeded"):
+        scan_repository(repo, worktree=True, tracked=False, history=False)
 
 
 def test_tracked_scans_index_and_history_scans_removed_content(tmp_path: Path) -> None:
