@@ -105,9 +105,7 @@ def test_ingestor_appends_normalized_records_with_provenance_and_checkpoint(
         assert first.records_written == 1
         assert first.checkpoint.cursor == "1"
         assert first.checkpoint.state["completed"] is False
-        risk = memory.search(
-            MemoryQuery(customer_id="acme", kinds=(MemoryKind.RISK,))
-        )[0]
+        risk = memory.search(MemoryQuery(customer_id="acme", kinds=(MemoryKind.RISK,)))[0]
         assert risk.sources[0].source_id == "risk-1"
         assert risk.metadata["connector"] == "local-json"
         assert risk.metadata["owner"] == "csm"

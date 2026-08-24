@@ -73,6 +73,7 @@ def test_schema_version_rejects_boolean(model: type[ReleaseManifest] | type[Inst
     with pytest.raises(ValidationError):
         model.model_validate(payload)
 
+
 @pytest.mark.parametrize("mapping", ["runtime", "officecli"])
 def test_release_manifest_requires_every_supported_platform(mapping: str) -> None:
     payload = _valid_manifest()
@@ -180,6 +181,7 @@ def test_immutable_mappings_preserve_json_round_trips(tmp_path: Path) -> None:
 
     assert ReleaseManifest.model_validate_json(manifest.model_dump_json()) == manifest
     assert InstallState.model_validate_json(state.model_dump_json()) == state
+
 
 def test_install_state_round_trips_without_customer_or_secret_fields(tmp_path: Path) -> None:
     state = InstallState(
