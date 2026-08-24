@@ -674,15 +674,25 @@ def test_connector_ingest_writes_memory_and_checkpoint(tmp_path: Path) -> None:
 
 def test_evaluate_writes_passing_regression_report(tmp_path: Path) -> None:
     report = tmp_path / "evaluation-report.json"
+    worktree_database = Path("csaf.db").resolve()
+    assert not worktree_database.exists()
 
     result = runner.invoke(
         app,
-        ["evaluate", "evaluations/golden", "--report", str(report)],
+        [
+            "--database",
+            ":memory:",
+            "evaluate",
+            "evaluations/golden",
+            "--report",
+            str(report),
+        ],
     )
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["pass_rate"] == 1.0
     assert json.loads(report.read_text())["passed"] is True
+    assert not worktree_database.exists()
 
 
 class StubOfficeDoctor:
