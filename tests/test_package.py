@@ -1,9 +1,12 @@
 """Smoke tests for the installable project scaffold."""
 
+import ast
 import json
 import subprocess
 import sys
+import tomllib
 import zipfile
+from email.parser import BytesParser
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,9 @@ import csaf
 
 ROOT = Path(__file__).resolve().parents[1]
 QBR_TEMPLATES = ROOT / "src" / "csaf" / "templates" / "qbr"
+PROJECT_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+    "version"
+]
 
 
 @pytest.fixture(scope="session")
@@ -38,8 +44,28 @@ def built_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return wheels[0]
 
 
-def test_package_exposes_version() -> None:
-    assert csaf.__version__ == "0.1.0.dev0"
+def test_package_exposes_project_version() -> None:
+    assert csaf.__version__ == PROJECT_VERSION
+
+
+def test_wheel_runtime_version_matches_metadata_and_project(built_wheel: Path) -> None:
+    with zipfile.ZipFile(built_wheel) as wheel:
+        metadata_path = f"csaf-{PROJECT_VERSION}.dist-info/METADATA"
+        metadata = BytesParser().parsebytes(wheel.read(metadata_path))
+        runtime_module = ast.parse(wheel.read("csaf/_version.py"))
+
+    assignments = [
+        statement
+        for statement in runtime_module.body
+        if isinstance(statement, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__version__"
+            for target in statement.targets
+        )
+    ]
+    assert len(assignments) == 1
+    runtime_version = ast.literal_eval(assignments[0].value)
+    assert runtime_version == metadata["Version"] == PROJECT_VERSION
 
 
 def test_wheel_contains_exact_vetted_qbr_template_bytes(built_wheel: Path) -> None:
