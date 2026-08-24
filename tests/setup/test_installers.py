@@ -28,10 +28,21 @@ PLATFORMS = {
     "linux-x64",
     "linux-arm64",
 }
+SHELL_ASSETS = (
+    INSTALLER / "install.sh",
+    ROOT / "plugins/csaf/skills/csaf/scripts/csaf.sh",
+)
 
 
 def _dependency_metadata() -> dict[str, object]:
     return json.loads(DEPENDENCIES.read_text(encoding="utf-8"))
+
+
+def test_tracked_shell_assets_require_lf_checkouts() -> None:
+    attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    assert "*.sh text eol=lf" in attributes
+    for asset in SHELL_ASSETS:
+        assert b"\r" not in asset.read_bytes(), f"{asset.relative_to(ROOT)} must use LF only"
 
 
 def test_dependency_contract_pins_exact_stable_assets() -> None:
