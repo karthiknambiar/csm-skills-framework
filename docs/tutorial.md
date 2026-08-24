@@ -1,103 +1,109 @@
-# Tutorial: build customer context and run skills
+# Tutorial: use CSAF from your assistant
 
-This tutorial uses bundled sample data and deterministic local processing. The
-Account Brief and Meeting Copilot steps do not require SaaS credentials or
-OfficeCLI. QBR documents require a compatible local OfficeCLI installation, but
-never an API key or hosted AI service.
+This walkthrough starts with a native Codex or Claude Code installation. CSAF processes customer context locally. It does not require SaaS credentials, an API key, or a hosted AI service.
 
-## 1. Install
+## 1. Check the installation
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
-```
+Ask your assistant:
 
-On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
+> "Check whether CSAF is ready on this machine. Explain any failed check, but do not install or repair anything without asking me first."
 
-## 2. Ingest normalized records
+The assistant runs the native diagnostic:
 
 ```bash
-csaf --database tutorial.db connector ingest json examples/data/acme-memory.json \
-  --customer-id acme
+csaf setup doctor
 ```
 
-Inspect current risks:
+For structured diagnostic output:
+
+```bash
+csaf setup doctor --json
+```
+
+Exit code `0` means the runtime, required OfficeCLI binary, detected adapters, and permissions are ready. Exit code `2` needs attention. Follow the [installation troubleshooting guide](installation.md#troubleshooting) and approve a repair only after reviewing its plan.
+
+## 2. Add customer context
+
+The repository includes normalized sample records. Ask:
+
+> "Load `examples/data/acme-memory.json` into Customer Memory for the exact customer ID `acme`. Tell me which local database will change before you run it."
+
+The equivalent local command is:
+
+```bash
+csaf --database tutorial.db connector ingest json examples/data/acme-memory.json --customer-id acme
+```
+
+Inspect current risks without changing memory:
 
 ```bash
 csaf --database tutorial.db memory inspect acme --kind risk --latest-only
 ```
 
-## 3. Generate an Account Brief
+## 3. Create an Account Brief
+
+Ask:
+
+> "Prepare an Account Brief for customer `acme` from the last 90 days in Customer Memory. Save it as `acme-brief.md` and keep missing facts explicit."
+
+The local workflow command is:
 
 ```bash
-csaf --database tutorial.db account-brief acme --output acme-brief.md
+csaf --database tutorial.db account-brief acme --days 90 --output acme-brief.md
 ```
 
-Open `acme-brief.md`. Evidence bullets contain `memory:UUID` citations, and a new
-artifact revision is now present in `tutorial.db`.
+The brief cites the Customer Memory records it uses. A successful run may append derived brief context to Customer Memory, so the assistant explains that change and the output path before execution.
 
-For the generic skill command, the recommended PowerShell route is the bundled
-UTF-8 JSON input file:
+## 4. Analyze a customer meeting
 
-```powershell
-csaf --database tutorial.db skill run account-brief `
-  --input-file examples/data/account-brief-input.json
-```
+Ask:
 
-Use `--output-dir generated` to deliver artifacts to disk. The JSON response
-omits artifact bytes unless `--include-artifact-content` is explicitly supplied.
+> "Use Meeting Copilot on `examples/data/acme-meeting.md` for customer `acme` and meeting ID `acme-kickoff`. Separate actions from commitments, preserve the transcript evidence, and save the analysis as `acme-meeting-analysis.md`."
 
-## 4. Analyze a meeting
+The local workflow command is:
 
 ```bash
-csaf --database tutorial.db meeting analyze examples/data/acme-meeting.md \
-  --customer-id acme --meeting-id acme-kickoff \
-  --output acme-meeting-analysis.md
+csaf --database tutorial.db meeting analyze examples/data/acme-meeting.md --customer-id acme --meeting-id acme-kickoff --output acme-meeting-analysis.md
 ```
 
-Meeting Copilot appends `meeting`, `timeline`, `action_item`, `commitment`,
-`risk`, and `feature_request` records grounded in the transcript.
-Actions capture customer next steps separately from promises or commitments.
-Generate the Account Brief again to see the newly retained context.
+Meeting Copilot writes grounded meeting, timeline, action, commitment, risk, and product-feedback records only after a successful analysis. Regenerate the Account Brief to include the retained meeting context.
 
-## 5. Check OfficeCLI and generate QBR documents
+## 5. Generate QBR documents
 
-QBR creates local PowerPoint and Word artifacts through OfficeCLI. Run the
-preflight first:
+OfficeCLI is mandatory for QBR PowerPoint and Word output. Ask your assistant to check it locally:
 
-```powershell
-csaf office doctor
+```bash
 csaf office doctor --json
 ```
 
-A failed check exits with code 2 and includes installation or upgrade guidance.
-The doctor does not install anything. After it reports ready, generate both
-artifacts locally:
+You can provide your own QBR template for PowerPoint, Word, or both. If you request a template but have not supplied an accessible file, the assistant asks for it instead of substituting another file. For a format without a user template, CSAF uses its bundled, vetted generic QBR template. It never searches for or downloads a template at runtime.
 
-```powershell
-csaf --database tutorial.db qbr generate acme --quarter 2026-Q3 `
-  --output-dir generated
-```
+With a PowerPoint template and the bundled Word template, ask:
 
-## 6. Run regressions
+> "Create the 2026-Q3 QBR for customer `acme` in `generated/`. Use my PowerPoint template at `brand-qbr.pptx`; use CSAF's bundled vetted template for Word. Tell me about Customer Memory changes before running it."
+
+The local workflow command is:
 
 ```bash
-csaf evaluate evaluations/golden --report evaluation-report.json
+csaf --database tutorial.db qbr generate acme --quarter 2026-Q3 --powerpoint-template brand-qbr.pptx --output-dir generated
 ```
 
-The process exits nonzero if a versioned expectation regresses. Review the report's
-category scores and findings before changing a golden baseline.
+Only treat the QBR as delivered after the command exits successfully and both reported artifact paths exist. CSAF preserves the source template.
 
-## Python examples
+## 6. Check for updates
 
-For programmatic usage, run:
+Ask:
+
+> "Check whether a stable CSAF update is available. Notify me only; do not install it."
+
+The assistant runs:
 
 ```bash
-python examples/account_brief.py
-python examples/meeting_copilot.py
-python examples/ingest_json.py
+csaf setup check-update --json
 ```
 
-Each script owns and closes its runtime resources and can be adapted into a test,
-job, notebook, or application composition root.
+The native launcher also performs this cached check at most once per 24 hours. It never auto-installs updates. Applying an update requires a separate `csaf setup update` command and fresh explicit consent.
+
+## Continue
+
+Read the [CLI reference](cli.md) for structured automation, the [OfficeCLI guide](officecli.md) for document diagnostics, or the [Customer Memory model](memory-model.md) for revision and provenance behavior.
