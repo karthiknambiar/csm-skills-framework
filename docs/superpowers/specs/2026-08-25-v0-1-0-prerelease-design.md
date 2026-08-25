@@ -12,12 +12,13 @@ Publish the current `0.1.0` package as an installable GitHub prerelease so users
 - Create one annotated version tag, `v0.1.0`, at the exact verified `main` commit.
 - Publish the tag as a GitHub prerelease and do not mark it as the repository's latest stable release.
 - Keep the existing direct, versioned installer URLs working. Users may install and test `v0.1.0` by following the README commands.
+- Update the README's installation wording from "tagged stable" to "tagged testing prerelease" without changing the direct `v0.1.0` URLs or commands.
 - Keep stable-release discovery separate. GitHub's latest-stable endpoint and CSAF's notify-only stable update checks must not select this prerelease.
 - Put the testing warning, consent-first installation behavior, mandatory pinned OfficeCLI disclosure, and supported assistants in the release notes.
 
 ## Publication workflow
 
-The tag-triggered GitHub Actions workflow remains the only release-asset producer. Before tagging, update its publication step to set prerelease metadata explicitly and disable latest-release promotion. This avoids a window in which the testing build could appear stable.
+The tag-triggered GitHub Actions workflow remains the only release-asset producer. Before tagging, update its publication step to set prerelease metadata explicitly, disable latest-release promotion, and publish the approved testing notice as release notes. This avoids a window in which the testing build could appear stable.
 
 The workflow must continue to:
 
@@ -59,6 +60,7 @@ The standalone Python wheel and source distribution are build-verification outpu
 
 Before tag creation:
 
+- Run documentation regressions proving the README identifies `v0.1.0` as an installable testing prerelease and retains the direct versioned installer commands.
 - Run the full test suite with warnings treated as errors.
 - Run Ruff lint and formatting checks.
 - Build the wheel and source distribution.
@@ -73,4 +75,3 @@ After publication:
 - Download `SHA256SUMS` and every release asset into a fresh temporary directory and verify every checksum.
 - Confirm the README's direct installer URLs return the published scripts.
 - Record the successful release-workflow URL in the handoff.
-
