@@ -99,6 +99,7 @@ class AssistantKind(StrEnum):
 
     CODEX = "codex"
     CLAUDE = "claude"
+    GEMINI = "gemini"
 
 
 MappingKey = TypeVar("MappingKey")

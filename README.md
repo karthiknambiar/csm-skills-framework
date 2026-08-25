@@ -1,6 +1,6 @@
 # Customer Success Agent Framework (CSAF)
 
-CSAF turns local customer context into grounded account briefs, meeting follow-ups, and QBR documents from Codex or Claude Code.
+CSAF turns local customer context into grounded account briefs, meeting follow-ups, and QBR documents from Codex, Claude Code, or Gemini CLI.
 
 > **Testing status:** CSAF’s native agent integration is still being tested. Use non-production data, review each setup plan before consenting, and report unexpected behavior.
 
@@ -8,7 +8,7 @@ CSAF turns local customer context into grounded account briefs, meeting follow-u
 
 ## Install
 
-The commands below download the installer from the tagged stable `v0.1.0` release. Read the script before running it. The installer detects Codex and Claude Code and installs one target for each detected supported assistant type for the current user/configured environment. It makes no change until it shows the plan and you consent.
+The commands below download the installer from the tagged stable `v0.1.0` release. Read the script before running it. The installer detects Codex, Claude Code, and Gemini CLI and installs one target for each detected supported assistant type for the current user/configured environment. It makes no change until it shows the plan and you consent.
 
 ### Windows
 
@@ -42,7 +42,7 @@ See [installation](docs/installation.md) for directories, offline setup, diagnos
 
 ## Ask your assistant to install CSAF
 
-If you would rather not use a terminal, give Codex or Claude Code this prompt:
+If you would rather not use a terminal, give Codex, Claude Code, or Gemini CLI this prompt:
 
 > Open the CSAF GitHub release at `https://github.com/karthiknambiar/csm-skills-framework/releases/tag/v0.1.0`. Read the installation guide. Use the CSAF installer and release manifest from the tagged `v0.1.0` release. Permit only the manifest-declared CSAF and OfficeCLI assets, the tagged installer's pinned, checksum-verified uv 0.12.3 platform asset, and the uv-managed Python 3.12.13 dependency download. Do not download anything else. Install one target for each detected supported assistant type for the current user/configured environment. Show me the complete plan first. Ask for my consent before installing OfficeCLI or making any change.
 
@@ -94,11 +94,11 @@ csaf setup doctor
 csaf office doctor --json
 ```
 
-If a component is missing or damaged, run `csaf setup repair` and review its plan. If no assistant was detected during installation, install Codex or Claude Code first, then repair. Full diagnostics and recovery steps are in [installation](docs/installation.md#troubleshooting).
+If a component is missing or damaged, run `csaf setup repair` and review its plan. If no assistant was detected during installation, install Codex, Claude Code, or Gemini CLI first, then repair. Full diagnostics and recovery steps are in [installation](docs/installation.md#troubleshooting).
 
 ## Privacy
 
-The CSAF runtime itself processes Customer Memory, templates, and generated artifacts locally and does not send them to a hosted AI service. Codex or Claude Code may handle prompts and files under its provider and organization settings. Review your Codex or Claude Code provider data controls before supplying customer information. Setup uses HTTPS only to obtain tagged release metadata and checksum-verified assets; `check-update` may contact the release endpoint, is cached for 24 hours, and does not install. Keep output directories and local database files within your organization's approved storage.
+The CSAF runtime itself processes Customer Memory, templates, and generated artifacts locally and does not send them to a hosted AI service. Codex, Claude Code, or Gemini CLI may handle prompts and files under its provider and organization settings. Review your assistant provider's data controls before supplying customer information. Setup uses HTTPS only to obtain tagged release metadata and checksum-verified assets; `check-update` may contact the release endpoint, is cached for 24 hours, and does not install. Keep output directories and local database files within your organization's approved storage.
 
 ## Advanced documentation
 

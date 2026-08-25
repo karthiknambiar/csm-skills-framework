@@ -109,6 +109,7 @@ def test_bootstrap_source_is_consent_first_and_never_executes_downloaded_text(na
     assert "--yes" in source
     assert "--codex-only" in source
     assert "--claude-only" in source
+    assert "--gemini-only" in source
     assert "csaf.setup.cli" in source
     assert "UV_UNMANAGED_INSTALL" in source
     assert "UV_PYTHON_INSTALL_DIR" in source
@@ -309,6 +310,7 @@ def test_powershell_dry_run_discloses_directory_detected_adapter_destinations(
     home = tmp_path / "assistant home"
     (home / ".codex" / "skills").mkdir(parents=True)
     (home / ".claude").mkdir()
+    (home / ".gemini").mkdir()
     data_root = tmp_path / "CSAF data"
     environment = {
         **os.environ,
@@ -344,9 +346,10 @@ def test_powershell_dry_run_discloses_directory_detected_adapter_destinations(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Targets: codex, claude" in result.stdout
+    assert "Targets: codex, claude, gemini" in result.stdout
     assert f"Codex adapter destination: {home / '.codex' / 'skills' / 'csaf'}" in result.stdout
     assert f"Claude adapter destination: {data_root / 'adapters' / 'claude'}" in result.stdout
+    assert f"Gemini adapter destination: {home / '.gemini' / 'skills' / 'csaf'}" in result.stdout
     assert not data_root.exists()
 
 
@@ -440,10 +443,13 @@ def test_shell_plan_contract_matches_python_directory_detection_and_destinations
     assert 'codex_skill_root="${CODEX_HOME:-$HOME/.codex}/skills"' in source
     assert '[ -d "$codex_skill_root" ]' in source
     assert '[ -d "$HOME/.claude" ]' in source
+    assert '[ -d "$HOME/.gemini" ]' in source
     assert 'codex_adapter_path="$codex_skill_root/csaf"' in source
     assert 'claude_adapter_path="$data_root/adapters/claude"' in source
+    assert 'gemini_adapter_path="$HOME/.gemini/skills/csaf"' in source
     assert '"Codex adapter destination: $codex_adapter_path"' in source
     assert '"Claude adapter destination: $claude_adapter_path"' in source
+    assert '"Gemini adapter destination: $gemini_adapter_path"' in source
 
 
 @pytest.mark.parametrize(

@@ -86,6 +86,12 @@ def codex_skill_root(*, home: Path | None = None, environ: Mapping[str, str] | N
     return codex_home / "skills"
 
 
+def gemini_skill_root(*, home: Path | None = None) -> Path:
+    """Return Gemini CLI's conventional user-scoped skill directory."""
+    user_home = Path.home() if home is None else Path(home)
+    return user_home / ".gemini" / "skills"
+
+
 def detect_assistants(
     *,
     home: Path | None = None,
@@ -100,5 +106,6 @@ def detect_assistants(
         or codex_skill_root(home=user_home, environ=environment).is_dir()
         or which("codex") is not None,
         AssistantKind.CLAUDE: (user_home / ".claude").is_dir() or which("claude") is not None,
+        AssistantKind.GEMINI: (user_home / ".gemini").is_dir() or which("gemini") is not None,
     }
     return tuple(assistant for assistant in AssistantKind if available[assistant])

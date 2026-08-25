@@ -2,7 +2,7 @@
 
 ## Start here
 
-- [Install CSAF](installation.md) — native Codex and Claude Code setup on Windows, macOS, and Linux.
+- [Install CSAF](installation.md) — native Codex, Claude Code, and Gemini CLI setup on Windows, macOS, and Linux.
 - [Tutorial](tutorial.md) — check readiness and run Account Brief, Meeting Copilot, and QBR from an assistant.
 - [OfficeCLI integration](officecli.md) — consent, local document rendering, diagnostics, and manual installation.
 - [CLI reference](cli.md) — local commands and exit behavior.

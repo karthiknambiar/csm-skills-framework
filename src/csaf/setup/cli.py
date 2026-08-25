@@ -43,6 +43,7 @@ from csaf.setup.assets import (
 from csaf.setup.manager import (
     ClaudeManagedAdapter,
     CodexManagedAdapter,
+    GeminiManagedAdapter,
     InstallPlan,
     SetupManager,
     SetupResult,
@@ -53,6 +54,7 @@ from csaf.setup.paths import (
     current_platform,
     default_data_root,
     detect_assistants,
+    gemini_skill_root,
 )
 from csaf.setup.types import AssistantKind, InstallState, ReleaseManifest, Version
 
@@ -693,6 +695,7 @@ def _make_manager() -> SetupManager:
     adapters = {
         AssistantKind.CODEX: CodexManagedAdapter(codex_skill_root()),
         AssistantKind.CLAUDE: ClaudeManagedAdapter(data_root / "adapters" / "claude"),
+        AssistantKind.GEMINI: GeminiManagedAdapter(gemini_skill_root()),
     }
     return SetupManager(
         data_root=data_root,
@@ -716,14 +719,20 @@ def _emit_json(value: Mapping[str, object]) -> None:
     typer.echo(json.dumps(dict(value), indent=2, sort_keys=True))
 
 
-def _targets(codex_only: bool, claude_only: bool) -> tuple[AssistantKind, ...] | None:
-    if codex_only and claude_only:
-        raise SetupError("choose only one of --codex-only and --claude-only")
-    if codex_only:
-        return (AssistantKind.CODEX,)
-    if claude_only:
-        return (AssistantKind.CLAUDE,)
-    return None
+def _targets(
+    codex_only: bool,
+    claude_only: bool,
+    gemini_only: bool,
+) -> tuple[AssistantKind, ...] | None:
+    overrides = {
+        AssistantKind.CODEX: codex_only,
+        AssistantKind.CLAUDE: claude_only,
+        AssistantKind.GEMINI: gemini_only,
+    }
+    selected = tuple(kind for kind, enabled in overrides.items() if enabled)
+    if len(selected) > 1:
+        raise SetupError("choose only one assistant-only target override")
+    return selected or None
 
 
 def _display_text(value: object) -> str:
@@ -904,13 +913,14 @@ def install(
     assume_yes: Annotated[bool, typer.Option("--yes", help="Approve the displayed plan.")] = False,
     codex_only: Annotated[bool, typer.Option("--codex-only")] = False,
     claude_only: Annotated[bool, typer.Option("--claude-only")] = False,
+    gemini_only: Annotated[bool, typer.Option("--gemini-only")] = False,
     manifest_source: Annotated[
         str | None, typer.Option("--manifest", help="Tagged manifest HTTPS URL or local file.")
     ] = None,
 ) -> None:
     """Install CSAF, mandatory OfficeCLI, and selected native adapters."""
     try:
-        requested = _targets(codex_only, claude_only)
+        requested = _targets(codex_only, claude_only, gemini_only)
         manager = _make_manager()
         resolver = _make_resolver()
         plan = manager.plan_install(resolver.resolve(manifest_source), requested_targets=requested)

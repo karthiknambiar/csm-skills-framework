@@ -8,7 +8,8 @@ param(
     [Alias("data-root")][string]$DataRoot,
     [string]$Platform,
     [Alias("codex-only")][switch]$CodexOnly,
-    [Alias("claude-only")][switch]$ClaudeOnly
+    [Alias("claude-only")][switch]$ClaudeOnly,
+    [Alias("gemini-only")][switch]$GeminiOnly
 )
 
 if ($WhatIfPreference) { $DryRun = $true }
@@ -502,7 +503,9 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
 if ($MyInvocation.InvocationName -eq ".") {
     return
 }
-if ($CodexOnly -and $ClaudeOnly) { Fail "choose only one assistant override" }
+if (($CodexOnly -and $ClaudeOnly) -or ($CodexOnly -and $GeminiOnly) -or ($ClaudeOnly -and $GeminiOnly)) {
+    Fail "choose only one assistant override"
+}
 $SelectedPlatform = Get-PlatformName
 if (-not $SelectedPlatform.StartsWith("windows-")) { Fail "use install.sh on macOS or Linux" }
 if (-not $DataRoot) {
@@ -533,6 +536,9 @@ if ($CodexOnly) {
 elseif ($ClaudeOnly) {
     $Targets.Add("claude")
 }
+elseif ($GeminiOnly) {
+    $Targets.Add("gemini")
+}
 else {
     if ($env:CODEX_HOME -or
         (Test-Path -LiteralPath $CodexSkillRoot -PathType Container) -or
@@ -543,6 +549,10 @@ else {
         (Get-Command claude -ErrorAction SilentlyContinue)) {
         $Targets.Add("claude")
     }
+    if ((Test-Path -LiteralPath (Join-Path $HOME ".gemini") -PathType Container) -or
+        (Get-Command gemini -ErrorAction SilentlyContinue)) {
+        $Targets.Add("gemini")
+    }
 }
 $TargetSummary = if ($Targets.Count) { $Targets -join ", " } else { "runtime only (none detected)" }
 $UvPath = Join-Path $DataRoot "bin\uv.exe"
@@ -551,6 +561,7 @@ $UvCache = Join-Path $DataRoot "cache\uv"
 $OfficeCLIPath = Join-Path $DataRoot "officecli\$OfficeCLIVersion\officecli.exe"
 $CodexAdapterPath = Join-Path $CodexSkillRoot "csaf"
 $ClaudeAdapterPath = Join-Path $DataRoot "adapters\claude"
+$GeminiAdapterPath = Join-Path $HOME ".gemini\skills\csaf"
 
 Write-Output "CSAF $($ReleaseManifest.version) installation plan"
 Write-Output "Platform: $SelectedPlatform"
@@ -564,6 +575,9 @@ if ($Targets.Contains("codex")) {
 }
 if ($Targets.Contains("claude")) {
     Write-Output "Claude adapter destination: $ClaudeAdapterPath"
+}
+if ($Targets.Contains("gemini")) {
+    Write-Output "Gemini adapter destination: $GeminiAdapterPath"
 }
 Write-Output "OfficeCLI is mandatory because QBR PowerPoint and Word generation cannot work without it."
 Write-Output "CSAF and OfficeCLI run locally with no API key or hosted AI service."
@@ -657,6 +671,9 @@ try {
     }
     elseif ($ClaudeOnly) {
         Invoke-Checked $resolvedPython @("-m", "csaf.setup.cli", "install", "--manifest", $ManifestFile, "--yes", "--claude-only")
+    }
+    elseif ($GeminiOnly) {
+        Invoke-Checked $resolvedPython @("-m", "csaf.setup.cli", "install", "--manifest", $ManifestFile, "--yes", "--gemini-only")
     }
     else {
         Invoke-Checked $resolvedPython @("-m", "csaf.setup.cli", "install", "--manifest", $ManifestFile, "--yes")

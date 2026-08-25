@@ -121,7 +121,11 @@ class FakeManager:
         self,
         root: Path,
         *,
-        targets: tuple[AssistantKind, ...] = (AssistantKind.CODEX, AssistantKind.CLAUDE),
+        targets: tuple[AssistantKind, ...] = (
+            AssistantKind.CODEX,
+            AssistantKind.CLAUDE,
+            AssistantKind.GEMINI,
+        ),
     ) -> None:
         self.root = root
         self.targets = targets
@@ -216,7 +220,7 @@ def test_install_discloses_complete_plan_before_prompt_and_decline_is_exit_two(
         "CSAF version: 0.2.0",
         "OfficeCLI version: 1.0.143",
         "mandatory for QBR PowerPoint and Word generation",
-        "Assistants: codex, claude",
+        "Assistants: codex, claude, gemini",
         str(manager.root / "versions" / "0.2.0"),
         str(manager.root / "officecli" / "1.0.143" / "officecli"),
         "Network: HTTPS downloads of verified CSAF, OfficeCLI, and adapter assets",
@@ -231,6 +235,7 @@ def test_install_discloses_complete_plan_before_prompt_and_decline_is_exit_two(
     [
         ("--codex-only", (AssistantKind.CODEX,)),
         ("--claude-only", (AssistantKind.CLAUDE,)),
+        ("--gemini-only", (AssistantKind.GEMINI,)),
     ],
 )
 def test_install_yes_selects_target_and_skips_prompt(

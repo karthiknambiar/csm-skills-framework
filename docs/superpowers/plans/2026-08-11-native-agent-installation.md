@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship consent-first, stable, cross-platform native CSAF installation for Codex and Claude Code, including mandatory local OfficeCLI, notify-only updates, vetted bundled QBR templates, and concise onboarding.
+**Goal:** Ship consent-first, stable, cross-platform native CSAF installation for Codex, Claude Code, and Gemini CLI, including mandatory local OfficeCLI, notify-only updates, vetted bundled QBR templates, and concise onboarding.
 
 **Architecture:** Add a focused `csaf.setup` package for verified assets, platform/assistant detection, state, transactions, and lifecycle commands. Keep one canonical `csaf` skill inside the Claude plugin source and package that same directory for Codex releases. Platform entry scripts bootstrap a private pinned `uv`, install a verified runtime bundle, then delegate all consent-sensitive work to the staged CSAF setup manager.
 
@@ -140,7 +140,7 @@ git commit -m "feat: define native setup contracts"
 
 - [ ] **Step 1: Write platform and assistant-detection tests**
 
-Cover Windows/macOS/Linux data roots, x64/arm64 normalization, `$CODEX_HOME`, the `~/.codex/skills` fallback, `~/.claude`, executable detection through injected `which`, both assistants, neither assistant, and unsupported OS/architecture errors. Pass explicit environment mappings and home paths; tests must not inspect the developer's real home directory.
+Cover Windows/macOS/Linux data roots, x64/arm64 normalization, `$CODEX_HOME`, the `~/.codex/skills` fallback, `~/.claude`, `~/.gemini`, executable detection through injected `which`, all three assistants, no assistant, and unsupported OS/architecture errors. Pass explicit environment mappings and home paths; tests must not inspect the developer's real home directory.
 
 ```python
 def test_detects_every_available_assistant(tmp_path: Path) -> None:
@@ -189,7 +189,7 @@ git add src/csaf/setup/paths.py src/csaf/setup/assets.py tests/setup
 git commit -m "feat: verify setup assets and platform paths"
 ```
 
-### Task 3: Install Codex and Claude adapters through supported boundaries
+### Task 3: Install Codex, Claude, and Gemini adapters through supported boundaries
 
 **Files:**
 - Create: `src/csaf/setup/adapters.py`
@@ -207,7 +207,7 @@ Test that Codex installs atomically to `$CODEX_HOME/skills/csaf`, preserves an e
 ["claude", "plugin", "install", "csaf@csaf", "--scope", "user"]
 ```
 
-Cover Codex-only, Claude-only, both, neither, command failure, timeout, and sanitized stderr. Inject the command runner; never invoke a real assistant in unit tests.
+Cover Codex-only, Claude-only, Gemini-only, all detected, none detected, command failure, timeout, and sanitized stderr. Inject the command runner; never invoke a real assistant in unit tests.
 
 - [ ] **Step 2: Verify RED**
 

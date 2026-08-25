@@ -10,6 +10,7 @@ dry_run=0
 assume_yes=0
 codex_only=0
 claude_only=0
+gemini_only=0
 requested_version=""
 manifest_path=""
 data_root=""
@@ -22,7 +23,7 @@ fail() {
 }
 
 usage() {
-    printf '%s\n' "Usage: install.sh [--dry-run] [--yes] [--version X.Y.Z] [--manifest FILE] [--data-root DIR] [--codex-only|--claude-only]"
+    printf '%s\n' "Usage: install.sh [--dry-run] [--yes] [--version X.Y.Z] [--manifest FILE] [--data-root DIR] [--codex-only|--claude-only|--gemini-only]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -31,6 +32,7 @@ while [ "$#" -gt 0 ]; do
         --yes) assume_yes=1; shift ;;
         --codex-only) codex_only=1; shift ;;
         --claude-only) claude_only=1; shift ;;
+        --gemini-only) gemini_only=1; shift ;;
         --version|--manifest|--data-root|--platform)
             [ "$#" -ge 2 ] || fail "missing value for $1"
             case "$1" in
@@ -46,7 +48,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-[ "$codex_only" -eq 0 ] || [ "$claude_only" -eq 0 ] || fail "choose only one assistant override"
+[ $((codex_only + claude_only + gemini_only)) -le 1 ] || fail "choose only one assistant override"
 
 if [ -z "$platform" ]; then
     kernel=$(uname -s 2>/dev/null) || fail "platform detection failed"
@@ -408,12 +410,16 @@ early_runtime_size=$(printf '%s\n' "$manifest_fields" | sed -n '4p')
 codex_skill_root="${CODEX_HOME:-$HOME/.codex}/skills"
 codex_selected=0
 claude_selected=0
+gemini_selected=0
 if [ "$codex_only" -eq 1 ]; then
     targets="codex"
     codex_selected=1
 elif [ "$claude_only" -eq 1 ]; then
     targets="claude"
     claude_selected=1
+elif [ "$gemini_only" -eq 1 ]; then
+    targets="gemini"
+    gemini_selected=1
 else
     targets=""
     if [ -n "${CODEX_HOME:-}" ] || [ -d "$codex_skill_root" ] ||
@@ -425,6 +431,10 @@ else
         claude_selected=1
         if [ -n "$targets" ]; then targets="$targets, claude"; else targets="claude"; fi
     fi
+    if [ -d "$HOME/.gemini" ] || command -v gemini >/dev/null 2>&1; then
+        gemini_selected=1
+        if [ -n "$targets" ]; then targets="$targets, gemini"; else targets="gemini"; fi
+    fi
     [ -n "$targets" ] || targets="runtime only (none detected)"
 fi
 
@@ -434,6 +444,7 @@ uv_cache="$data_root/cache/uv"
 officecli_path="$data_root/officecli/$officecli_version/officecli"
 codex_adapter_path="$codex_skill_root/csaf"
 claude_adapter_path="$data_root/adapters/claude"
+gemini_adapter_path="$HOME/.gemini/skills/csaf"
 
 printf '%s\n' "CSAF $release_version installation plan"
 printf '%s\n' "Platform: $platform"
@@ -446,6 +457,8 @@ printf '%s\n' "Mandatory OfficeCLI 1.0.143: $officecli_path"
     printf '%s\n' "Codex adapter destination: $codex_adapter_path"
 [ "$claude_selected" -eq 0 ] ||
     printf '%s\n' "Claude adapter destination: $claude_adapter_path"
+[ "$gemini_selected" -eq 0 ] ||
+    printf '%s\n' "Gemini adapter destination: $gemini_adapter_path"
 printf '%s\n' "OfficeCLI is mandatory because QBR PowerPoint and Word generation cannot work without it."
 printf '%s\n' "CSAF and OfficeCLI run locally with no API key or hosted AI service."
 printf '%s\n' "Release source: $manifest_source"
@@ -616,6 +629,8 @@ if [ "$codex_only" -eq 1 ]; then
     invoke_checked "$python_executable" -m csaf.setup.cli install --manifest "$manifest_file" --yes --codex-only
 elif [ "$claude_only" -eq 1 ]; then
     invoke_checked "$python_executable" -m csaf.setup.cli install --manifest "$manifest_file" --yes --claude-only
+elif [ "$gemini_only" -eq 1 ]; then
+    invoke_checked "$python_executable" -m csaf.setup.cli install --manifest "$manifest_file" --yes --gemini-only
 else
     invoke_checked "$python_executable" -m csaf.setup.cli install --manifest "$manifest_file" --yes
 fi

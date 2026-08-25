@@ -1,4 +1,4 @@
-"""Native Codex and Claude Code adapter installation boundaries."""
+"""Native Codex, Claude Code, and Gemini CLI adapter installation boundaries."""
 
 from __future__ import annotations
 
@@ -455,6 +455,7 @@ class CodexAdapterInstaller:
     """Install the canonical skill with locked, crash-recoverable activation."""
 
     kind = AssistantKind.CODEX
+    _assistant_name = "Codex"
 
     def __init__(self, source: Path, skill_root: Path) -> None:
         self._source = Path(source)
@@ -472,7 +473,7 @@ class CodexAdapterInstaller:
                 try:
                     _copy_skill_tree(self._source, staging)
                     if not (staging / "SKILL.md").is_file():
-                        raise SetupError("Codex adapter source is incomplete")
+                        raise SetupError(f"{self._assistant_name} adapter source is incomplete")
                     _fsync_tree(staging)
                     _fsync_directory(self._skill_root)
                     if target.exists() or target.is_symlink():
@@ -487,7 +488,8 @@ class CodexAdapterInstaller:
                             _fsync_directory(self._skill_root)
                         except OSError as error:
                             raise SetupError(
-                                "Codex adapter activated but cleanup is incomplete",
+                                f"{self._assistant_name} adapter activated but cleanup "
+                                "is incomplete",
                                 activated=True,
                             ) from error
                     return AdapterInstallResult(self.kind, target)
@@ -496,7 +498,7 @@ class CodexAdapterInstaller:
                 except OSError as error:
                     if activated:
                         raise SetupError(
-                            "Codex adapter activated but durability is uncertain",
+                            f"{self._assistant_name} adapter activated but durability is uncertain",
                             activated=True,
                         ) from error
                     if backup.exists() or backup.is_symlink():
@@ -507,25 +509,28 @@ class CodexAdapterInstaller:
                             _fsync_directory(self._skill_root)
                         except OSError as rollback_error:
                             raise SetupError(
-                                "Codex adapter installation failed and the previous adapter "
-                                "could not be restored"
+                                f"{self._assistant_name} adapter installation failed and "
+                                "the previous adapter could not be restored"
                             ) from rollback_error
-                    raise SetupError("Codex adapter installation failed") from error
+                    raise SetupError(
+                        f"{self._assistant_name} adapter installation failed"
+                    ) from error
                 finally:
                     if staging.exists() or staging.is_symlink():
                         try:
                             _remove_tree(staging)
                         except OSError as cleanup_error:
                             raise SetupError(
-                                "Codex adapter cleanup is incomplete", activated=activated
+                                f"{self._assistant_name} adapter cleanup is incomplete",
+                                activated=activated,
                             ) from cleanup_error
         except SetupError:
             raise
         except OSError as error:
             message = (
-                "Codex adapter activated but lock release is uncertain"
+                f"{self._assistant_name} adapter activated but lock release is uncertain"
                 if activated
-                else "Codex adapter installation failed"
+                else f"{self._assistant_name} adapter installation failed"
             )
             raise SetupError(message, activated=activated) from error
 
@@ -540,7 +545,23 @@ class CodexAdapterInstaller:
                     os.replace(backup, target)
             _fsync_directory(self._skill_root)
         except OSError as error:
-            raise SetupError("Codex adapter recovery failed") from error
+            raise SetupError(f"{self._assistant_name} adapter recovery failed") from error
+
+
+class GeminiAdapterInstaller(CodexAdapterInstaller):
+    """Install the canonical skill into Gemini CLI's user skill directory."""
+
+    kind = AssistantKind.GEMINI
+    _assistant_name = "Gemini CLI"
+
+    def install(self) -> AdapterInstallResult:
+        try:
+            return super().install()
+        except SetupError as error:
+            message = str(error).replace("Codex adapter", "Gemini CLI adapter")
+            if message == str(error):
+                raise
+            raise SetupError(message, activated=error.activated) from error
 
 
 class ClaudeAdapterInstaller:
@@ -771,12 +792,18 @@ def install_adapters(
     *,
     codex_only: bool = False,
     claude_only: bool = False,
+    gemini_only: bool = False,
 ) -> tuple[AdapterInstallResult, ...]:
     """Install all detected adapters, optionally validating one explicit target."""
-    if codex_only and claude_only:
-        raise SetupError("--codex-only and --claude-only cannot be used together")
+    overrides = {
+        AssistantKind.CODEX: codex_only,
+        AssistantKind.CLAUDE: claude_only,
+        AssistantKind.GEMINI: gemini_only,
+    }
+    if sum(overrides.values()) > 1:
+        raise SetupError("assistant-only overrides cannot be used together")
     detected_set = set(detected)
-    requested = AssistantKind.CODEX if codex_only else AssistantKind.CLAUDE if claude_only else None
+    requested = next((kind for kind, selected in overrides.items() if selected), None)
     if requested is not None and requested not in detected_set:
         raise SetupError("requested assistant was not detected")
     selected = tuple(

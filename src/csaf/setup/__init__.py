@@ -5,6 +5,7 @@ from csaf.setup.adapters import (
     AdapterInstallResult,
     ClaudeAdapterInstaller,
     CodexAdapterInstaller,
+    GeminiAdapterInstaller,
     install_adapters,
 )
 from csaf.setup.assets import (
@@ -20,6 +21,7 @@ from csaf.setup.paths import (
     current_platform,
     default_data_root,
     detect_assistants,
+    gemini_skill_root,
 )
 from csaf.setup.types import (
     AssistantKind,
@@ -36,6 +38,7 @@ __all__ = [
     "AdapterInstallResult",
     "ClaudeAdapterInstaller",
     "CodexAdapterInstaller",
+    "GeminiAdapterInstaller",
     "install_adapters",
     "AssetLimits",
     "AssistantKind",
@@ -43,6 +46,7 @@ __all__ = [
     "current_platform",
     "default_data_root",
     "detect_assistants",
+    "gemini_skill_root",
     "download_verified",
     "extract_verified_archive",
     "InstallState",

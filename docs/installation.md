@@ -14,12 +14,12 @@ The data root contains versioned runtimes, the CSAF-owned OfficeCLI binary, adap
 | macOS | `~/Library/Application Support/CSAF` |
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/csaf`, normally `~/.local/share/csaf` |
 
-Set `CSAF_DATA_ROOT` to an absolute, non-root path before setup to use another data root. Codex receives the `csaf` skill under `~/.codex/skills` or `$CODEX_HOME/skills`. Claude Code receives the user-scoped `csaf@csaf` plugin through its plugin manager; CSAF keeps its Claude adapter receipt under the data root. Setup does not install a Gemini CLI adapter.
+Set `CSAF_DATA_ROOT` to an absolute, non-root path before setup to use another data root. Codex receives the `csaf` skill under `~/.codex/skills` or `$CODEX_HOME/skills`. Claude Code receives the user-scoped `csaf@csaf` plugin through its plugin manager; CSAF keeps its Claude adapter receipt under the data root. Gemini CLI receives the same canonical `csaf` skill under `~/.gemini/skills`. Run `/skills reload` in an open Gemini CLI session after setup.
 
 ## What setup does
 
 1. Resolve a tagged stable release manifest and select the host platform.
-2. Detect Codex and Claude Code. By default, select one target per detected assistant type for the current user/configured environment.
+2. Detect Codex, Claude Code, and Gemini CLI. By default, select one target per detected assistant type for the current user/configured environment.
 3. Show the CSAF version, pinned OfficeCLI version, destinations, assistant targets, downloads, and requested action.
 4. Wait for explicit consent. `--yes` is consent for an already-reviewed displayed plan; do not use it when the plan has not been reviewed.
 5. Download only HTTPS assets named in the manifest, verify size and SHA-256, and stage them below the data root.
@@ -29,7 +29,7 @@ No API key is required. Normal skill execution is local and does not call a host
 
 ## Manifest and offline installation
 
-The release manifest is canonical JSON with a schema version, CSAF version, six platform runtime assets, Codex and Claude adapter assets, and OfficeCLI 1.0.143 assets with minimum supported version 1.0.137. Every asset entry supplies an HTTPS URL, exact byte size, and SHA-256 digest.
+The release manifest is canonical JSON with a schema version, CSAF version, six platform runtime assets, the canonical skill asset used by Codex and Gemini CLI, the Claude plugin asset, and OfficeCLI 1.0.143 assets with minimum supported version 1.0.137. Every asset entry supplies an HTTPS URL, exact byte size, and SHA-256 digest.
 
 For a restricted or air-gapped network, publish the tagged installer and every release asset on an internal HTTPS mirror that the target machine can reach. Regenerate and review the manifest so each mirrored URL, size, and digest matches the approved asset. Asset URLs must remain HTTPS; `file:` URLs and local asset paths are not supported. You may pass the regenerated manifest itself as a local file:
 
@@ -75,7 +75,7 @@ csaf office doctor --json
 
 Exit code `0` means the requested diagnostic is ready. Exit code `2` means setup, OfficeCLI, an adapter, permissions, or a smoke render needs attention.
 
-If setup reports no assistants, install or open Codex or Claude Code and run `csaf setup repair`. Use `csaf setup install --codex-only` or `csaf setup install --claude-only` only when you intentionally want one detected assistant type.
+If setup reports no assistants, install or open Codex, Claude Code, or Gemini CLI and run `csaf setup repair`. Use `csaf setup install --codex-only`, `csaf setup install --claude-only`, or `csaf setup install --gemini-only` only when you intentionally want one detected assistant type.
 
 If files are missing, checksums differ, or an adapter is incomplete, run:
 

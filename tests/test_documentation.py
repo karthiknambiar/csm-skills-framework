@@ -239,7 +239,8 @@ def test_privacy_scope_distinguishes_csaf_from_assistant_providers() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert "The CSAF runtime itself" in readme
-    assert "Review your Codex or Claude Code provider data controls" in readme
+    assert "Codex, Claude Code, or Gemini CLI may handle prompts and files" in readme
+    assert "Review your assistant provider's data controls" in readme
 
 
 def test_readme_covers_every_builtin_workflow_and_qbr_template_policy() -> None:
@@ -279,13 +280,16 @@ def test_detailed_native_guides_match_setup_contracts() -> None:
         "csaf setup uninstall",
         "Codex",
         "Claude Code",
+        "Gemini CLI",
         "each detected supported assistant type for the current user/configured environment",
         "explicit consent",
         "never auto-installs",
         "notifies",
     ):
         assert phrase in combined
-    assert "does not install a Gemini CLI adapter" in installation
+    assert "~/.gemini/skills" in installation
+    assert "--gemini-only" in installation
+    assert "does not install a Gemini CLI adapter" not in installation
     assert "one target per detected assistant type" in installation
     assert "every detected installation" not in combined.lower()
     assert "1.0.143" in office

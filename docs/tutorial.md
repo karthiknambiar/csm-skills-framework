@@ -1,6 +1,6 @@
 # Tutorial: use CSAF from your assistant
 
-This walkthrough starts with a native Codex or Claude Code installation. CSAF processes customer context locally. It does not require SaaS credentials, an API key, or a hosted AI service.
+This walkthrough starts with a native Codex, Claude Code, or Gemini CLI installation. CSAF processes customer context locally. It does not require SaaS credentials, an API key, or a hosted AI service.
 
 ## 1. Check the installation
 

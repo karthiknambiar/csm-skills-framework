@@ -227,11 +227,13 @@ def _active(root: Path, version: str = "0.0.9") -> None:
 
 def test_planning_is_read_only_and_selects_every_detected_assistant(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
-    manager, _ = _manager(tmp_path, harness)
+    detected = (AssistantKind.CODEX, AssistantKind.CLAUDE, AssistantKind.GEMINI)
+    manager, _ = _manager(tmp_path, harness, detected=detected)
 
     plan = manager.plan_install(_manifest(), requested_targets=None)
 
-    assert plan.targets == (AssistantKind.CODEX, AssistantKind.CLAUDE)
+    assert plan.targets == detected
+    assert plan.adapter_assets[AssistantKind.GEMINI] == plan.manifest.codex_skill
     assert plan.officecli_asset == plan.manifest.officecli.assets[PLATFORM]
     assert harness.effects == []
     assert not (tmp_path / "data").exists()

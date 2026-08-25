@@ -123,21 +123,35 @@ def test_codex_skill_root_honors_codex_home_and_falls_back(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    ("codex_home", "claude_home", "executables", "expected"),
+    ("codex_home", "claude_home", "gemini_home", "executables", "expected"),
     [
-        (True, True, set(), (AssistantKind.CODEX, AssistantKind.CLAUDE)),
-        (False, False, {"codex", "claude"}, (AssistantKind.CODEX, AssistantKind.CLAUDE)),
-        (True, False, set(), (AssistantKind.CODEX,)),
-        (False, True, set(), (AssistantKind.CLAUDE,)),
-        (False, False, set(), ()),
+        (
+            True,
+            True,
+            True,
+            set(),
+            ("codex", "claude", "gemini"),
+        ),
+        (
+            False,
+            False,
+            False,
+            {"codex", "claude", "gemini"},
+            ("codex", "claude", "gemini"),
+        ),
+        (True, False, False, set(), ("codex",)),
+        (False, True, False, set(), ("claude",)),
+        (False, False, True, set(), ("gemini",)),
+        (False, False, False, set(), ()),
     ],
 )
 def test_detect_assistants_uses_injected_roots_and_executables(
     tmp_path: Path,
     codex_home: bool,
     claude_home: bool,
+    gemini_home: bool,
     executables: set[str],
-    expected: tuple[AssistantKind, ...],
+    expected: tuple[str, ...],
 ) -> None:
     home = tmp_path / "injected-home"
     home.mkdir()
@@ -148,6 +162,8 @@ def test_detect_assistants_uses_injected_roots_and_executables(
         environ["CODEX_HOME"] = str(configured)
     if claude_home:
         (home / ".claude").mkdir()
+    if gemini_home:
+        (home / ".gemini").mkdir()
 
     detected = detect_assistants(
         home=home,
@@ -155,7 +171,7 @@ def test_detect_assistants_uses_injected_roots_and_executables(
         which=lambda name: f"/bin/{name}" if name in executables else None,
     )
 
-    assert detected == expected
+    assert tuple(kind.value for kind in detected) == expected
 
 
 def test_detect_assistants_does_not_use_developer_home(tmp_path: Path) -> None:
@@ -173,6 +189,12 @@ def test_explicit_codex_home_detects_codex_before_skills_exist(tmp_path: Path) -
     assert detected == (AssistantKind.CODEX, AssistantKind.CLAUDE)
 
 
+def test_gemini_skill_root_uses_user_scope(tmp_path: Path) -> None:
+    from csaf.setup import paths
+
+    assert paths.gemini_skill_root(home=tmp_path) == tmp_path / ".gemini" / "skills"
+
+
 def test_relative_xdg_data_home_uses_safe_home_fallback(tmp_path: Path) -> None:
     assert (
         default_data_root(
@@ -186,17 +208,20 @@ def test_relative_xdg_data_home_uses_safe_home_fallback(tmp_path: Path) -> None:
 
 def test_setup_exports_all_public_helpers() -> None:
     import csaf.setup as setup
+    from csaf.setup import paths
 
     expected = (
         current_platform,
         default_data_root,
         codex_skill_root,
+        paths.gemini_skill_root,
         detect_assistants,
     )
     assert (
         setup.current_platform,
         setup.default_data_root,
         setup.codex_skill_root,
+        setup.gemini_skill_root,
         setup.detect_assistants,
     ) == expected
     for name in (

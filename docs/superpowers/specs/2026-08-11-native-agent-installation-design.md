@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-11
 **Status:** Approved for implementation planning
-**Target:** Stable native distribution for Codex and Claude Code
+**Target:** Stable native distribution for Codex, Claude Code, and Gemini CLI
 
 ## Purpose
 
@@ -20,7 +20,7 @@ inputs or generated documents.
 
 ## Goals
 
-1. Provide native CSAF integration for Codex and Claude Code from one release.
+1. Provide native CSAF integration for Codex, Claude Code, and Gemini CLI from one release.
 2. Support both a one-command installer and assistant-led GitHub installation.
 3. Install into every detected supported assistant unless the user selects an
    explicit target override.
@@ -48,18 +48,20 @@ inputs or generated documents.
 ## Architecture
 
 One tagged GitHub release will contain a shared version manifest, platform
-installers, checksummed runtime assets, and two thin native adapters:
+installers, checksummed runtime assets, and three thin native adapters:
 
 1. **Codex adapter:** a standard `csaf` skill with `SKILL.md`, Codex UI metadata,
    a launcher, and progressively disclosed workflow references.
 2. **Claude Code adapter:** a versioned plugin with a `.claude-plugin` manifest,
    the equivalent `csaf` skill, and an entry in the repository's marketplace
    manifest.
-3. **Shared local runtime:** one private per-user CSAF installation invoked by
-   either adapter.
-4. **Bootstrap layer:** platform scripts that install, repair, update, diagnose,
+3. **Gemini CLI adapter:** the canonical `csaf` skill installed at user scope
+   under `~/.gemini/skills`.
+4. **Shared local runtime:** one private per-user CSAF installation invoked by
+   any adapter.
+5. **Bootstrap layer:** platform scripts that install, repair, update, diagnose,
    and uninstall the shared runtime and native adapters.
-5. **Release manifest:** the authoritative mapping of stable CSAF version,
+6. **Release manifest:** the authoritative mapping of stable CSAF version,
    compatible OfficeCLI version, assets, sizes, and checksums.
 
 The adapters contain conversational routing and safe invocation instructions,
@@ -68,7 +70,7 @@ therefore observe the same data, diagnostics, behavior, and installed version.
 
 Claude Code distribution follows its GitHub marketplace and versioned plugin
 model. Codex distribution follows its native skill structure and installation
-location. The common release does not require both products to use identical
+location. The common release does not require every assistant to use identical
 packaging internals.
 
 ## Release contents
@@ -101,7 +103,7 @@ macOS/Linux. Before changing the system, the installer displays:
 
 - the CSAF version;
 - the mandatory OfficeCLI version and purpose;
-- detected Codex and Claude Code installations;
+- detected Codex, Claude Code, and Gemini CLI installations;
 - every assistant target that will receive the adapter;
 - the destination directories; and
 - the release source and network activity.
@@ -126,7 +128,7 @@ The successful path is:
 
 ### Assistant-led GitHub installation
 
-A user may ask Codex or Claude Code to install CSAF from
+A user may ask Codex, Claude Code, or Gemini CLI to install CSAF from
 `karthiknambiar/csm-skills-framework`. The product's native installer first adds
 the adapter. If the shared runtime is absent, the adapter returns a structured
 bootstrap request explaining that it will install CSAF and mandatory OfficeCLI
@@ -286,7 +288,7 @@ The README will use this order:
 2. A prominent statement that OfficeCLI is mandatory for QBR document creation,
    is installed only with consent, and requires no API key.
 3. A quick-install table with the supported Windows, macOS, and Linux commands.
-4. An assistant-led GitHub installation prompt for Codex and Claude Code.
+4. An assistant-led GitHub installation prompt for Codex, Claude Code, and Gemini CLI.
 5. A first-use section with one natural-language example for Account Brief,
    Meeting Copilot, and QBR.
 6. QBR template guidance covering user templates and the bundled vetted default.
@@ -357,7 +359,7 @@ Tests will be written before implementation for:
 - interactive consent and `--yes` behavior;
 - manifest parsing, stable resolution, checksums, and version compatibility;
 - clean install, repeat install, repair, update, rollback, and uninstall;
-- Codex-only, Claude-only, both, and neither-detected environments;
+- Codex-only, Claude-only, Gemini-only, all-detected, and none-detected environments;
 - missing, outdated, malformed, failed, and healthy OfficeCLI installations;
 - update-cache timing and non-fatal offline behavior;
 - user templates, invalid templates, source preservation, and bundled fallback;
@@ -400,10 +402,10 @@ A stable release requires all of the following:
 
 The native installation release is complete when:
 
-1. A non-technical user can ask Codex or Claude Code to install CSAF from GitHub,
+1. A non-technical user can ask Codex, Claude Code, or Gemini CLI to install CSAF from GitHub,
    approve the disclosed changes, and successfully run a customer-success skill.
 2. A technical user can complete the same setup with one platform command.
-3. A machine with both assistants receives both adapters and one shared runtime.
+3. A machine with all three assistants receives all three adapters and one shared runtime.
 4. A machine without Python is bootstrapped without requiring package-management
    knowledge.
 5. OfficeCLI installation is clearly disclosed, consented to, and diagnosed.

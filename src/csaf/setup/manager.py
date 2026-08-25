@@ -28,6 +28,7 @@ from csaf.setup.adapters import (
     ClaudeAdapterInstaller,
     CodexAdapterInstaller,
     CommandRunner,
+    GeminiAdapterInstaller,
     _subprocess_runner,
 )
 from csaf.setup.assets import (
@@ -224,9 +225,12 @@ def _adapter_tree_digest(root: Path, receipt_name: str) -> str:
 
 
 class CodexManagedAdapter:
-    """Lifecycle facade using the unchanged Task 3 Codex installer."""
+    """Lifecycle facade for a user-scoped filesystem skill."""
 
     kind = AssistantKind.CODEX
+    _assistant_name = "Codex"
+    _slug = "codex"
+    _installer_type = CodexAdapterInstaller
 
     def __init__(self, skill_root: Path, *, checkpoint: Checkpoint | None = None) -> None:
         self._skill_root = Path(skill_root)
@@ -234,14 +238,16 @@ class CodexManagedAdapter:
         self._checkpoint = checkpoint or (lambda _phase: None)
 
     def install(self, asset: Path, version: Version) -> AdapterInstallResult:
-        self._checkpoint("codex:entry")
+        self._checkpoint(f"{self._slug}:entry")
         archive = Path(asset)
-        extracted = archive.parent / "codex-extracted"
+        extracted = archive.parent / f"{self._slug}-extracted"
         try:
             extract_verified_archive(archive, extracted, limits=_ADAPTER_LIMITS)
             candidates = [path.parent for path in extracted.rglob("SKILL.md")]
             if len(candidates) != 1:
-                raise SetupError("Codex adapter asset must contain exactly one skill")
+                raise SetupError(
+                    f"{self._assistant_name} adapter asset must contain exactly one skill"
+                )
             source = candidates[0]
             receipt = {
                 "schema_version": 1,
@@ -250,14 +256,17 @@ class CodexManagedAdapter:
                 "content_sha256": _adapter_tree_digest(source, _CODEX_RECEIPT),
             }
             write_json_atomic(source / _CODEX_RECEIPT, receipt)
-            result = CodexAdapterInstaller(source, self._skill_root).install()
+            result = self._installer_type(source, self._skill_root).install()
             if result.target != self.destination:
-                raise SetupError("Codex adapter returned an unexpected destination", activated=True)
+                raise SetupError(
+                    f"{self._assistant_name} adapter returned an unexpected destination",
+                    activated=True,
+                )
             return result
         except SetupError:
             raise
         except Exception as error:
-            raise SetupError("Codex adapter lifecycle failed") from error
+            raise SetupError(f"{self._assistant_name} adapter lifecycle failed") from error
         finally:
             if extracted.exists():
                 shutil.rmtree(extracted, ignore_errors=True)
@@ -273,15 +282,15 @@ class CodexManagedAdapter:
             "task3_backup_existed": backup.exists() or backup.is_symlink(),
         }
         if value["task3_staging_existed"] or value["task3_backup_existed"]:
-            raise SetupError("Codex adapter has unresolved activation artifacts")
+            raise SetupError(f"{self._assistant_name} adapter has unresolved activation artifacts")
         return MappingProxyType(value)
 
     def reconcile(self, recovery: Mapping[str, object]) -> None:
         expected = {"target_existed", "task3_staging_existed", "task3_backup_existed"}
         if set(recovery) != expected or any(type(recovery[key]) is not bool for key in expected):
-            raise SetupError("Codex adapter recovery snapshot is invalid")
+            raise SetupError(f"{self._assistant_name} adapter recovery snapshot is invalid")
         if recovery["task3_staging_existed"] or recovery["task3_backup_existed"]:
-            raise SetupError("Codex adapter recovery snapshot is uncertain")
+            raise SetupError(f"{self._assistant_name} adapter recovery snapshot is uncertain")
         _reject_linked_parents(self._skill_root)
         for value in (
             self._skill_root / ".csaf.staging",
@@ -329,7 +338,9 @@ class CodexManagedAdapter:
     def uninstall(self, target: Path) -> None:
         value = Path(target)
         if value != self.destination:
-            raise SetupError("Codex adapter destination does not match its receipt")
+            raise SetupError(
+                f"{self._assistant_name} adapter destination does not match its receipt"
+            )
         try:
             _reject_linked_parents(value.parent)
             details = value.lstat()
@@ -344,7 +355,16 @@ class CodexManagedAdapter:
                 _reject_linked_parents(value)
                 shutil.rmtree(value)
         except OSError as error:
-            raise SetupError("Codex adapter cleanup failed") from error
+            raise SetupError(f"{self._assistant_name} adapter cleanup failed") from error
+
+
+class GeminiManagedAdapter(CodexManagedAdapter):
+    """Lifecycle facade for Gemini CLI's user-scoped CSAF skill."""
+
+    kind = AssistantKind.GEMINI
+    _assistant_name = "Gemini CLI"
+    _slug = "gemini"
+    _installer_type = GeminiAdapterInstaller
 
 
 class _ClaudeVersionConflict(SetupError):
@@ -1013,7 +1033,7 @@ class SetupManager:
         )
         office = self._data_root / "officecli" / str(_OFFICE_VERSION) / office_name
         assets = {
-            kind: manifest.codex_skill if kind is AssistantKind.CODEX else manifest.claude_plugin
+            kind: manifest.claude_plugin if kind is AssistantKind.CLAUDE else manifest.codex_skill
             for kind in targets
         }
         destinations: dict[AssistantKind, Path] = {}

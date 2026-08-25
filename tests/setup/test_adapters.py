@@ -15,6 +15,7 @@ from typing import BinaryIO
 
 import pytest
 
+import csaf.setup.adapters as adapter_module
 from csaf.setup import AssistantKind, SetupError, Version
 from csaf.setup.adapters import (
     AdapterInstallResult,
@@ -99,6 +100,46 @@ def test_codex_installs_skill_and_records_exact_target(tmp_path: Path) -> None:
     assert (target / "scripts" / "csaf.sh").is_file()
     assert not (skill_root / ".csaf.staging").exists()
     assert not (skill_root / ".csaf.backup").exists()
+
+
+def test_gemini_installs_canonical_skill_in_user_scope(tmp_path: Path) -> None:
+    source = _skill_source(tmp_path)
+    skill_root = tmp_path / ".gemini" / "skills"
+
+    result = adapter_module.GeminiAdapterInstaller(source, skill_root).install()
+
+    target = skill_root / "csaf"
+    assert result == AdapterInstallResult(AssistantKind.GEMINI, target)
+    assert (target / "SKILL.md").read_text(encoding="utf-8") == "new"
+    assert (target / "scripts" / "csaf.sh").is_file()
+
+
+def test_gemini_source_validation_uses_gemini_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _skill_source(tmp_path)
+    scripts = source / "scripts"
+    original = Path.lstat
+
+    def symlink_lstat(path: Path):
+        details = original(path)
+        if path == scripts:
+
+            class LinkStat:
+                st_mode = stat.S_IFLNK | 0o777
+                st_file_attributes = 0
+                st_dev = details.st_dev
+                st_ino = details.st_ino
+
+            return LinkStat()
+        return details
+
+    monkeypatch.setattr(Path, "lstat", symlink_lstat)
+
+    with pytest.raises(SetupError, match="Gemini CLI adapter source") as caught:
+        adapter_module.GeminiAdapterInstaller(source, tmp_path / ".gemini" / "skills").install()
+
+    assert "Codex" not in str(caught.value)
 
 
 def test_codex_root_creation_failure_is_stable_and_redacted(
@@ -202,10 +243,10 @@ def test_claude_uses_exact_argument_arrays_and_timeout() -> None:
         ((AssistantKind.CODEX,), False, False, (AssistantKind.CODEX,)),
         ((AssistantKind.CLAUDE,), False, False, (AssistantKind.CLAUDE,)),
         (
-            (AssistantKind.CODEX, AssistantKind.CLAUDE),
+            (AssistantKind.CODEX, AssistantKind.CLAUDE, AssistantKind.GEMINI),
             False,
             False,
-            (AssistantKind.CODEX, AssistantKind.CLAUDE),
+            (AssistantKind.CODEX, AssistantKind.CLAUDE, AssistantKind.GEMINI),
         ),
         ((), False, False, ()),
         (
@@ -231,10 +272,15 @@ def test_installs_selected_detected_adapters(
 ) -> None:
     codex = RecordingInstaller(AssistantKind.CODEX, tmp_path / "codex")
     claude = RecordingInstaller(AssistantKind.CLAUDE)
+    gemini = RecordingInstaller(AssistantKind.GEMINI, tmp_path / "gemini")
 
     results = install_adapters(
         detected,
-        {AssistantKind.CODEX: codex, AssistantKind.CLAUDE: claude},
+        {
+            AssistantKind.CODEX: codex,
+            AssistantKind.CLAUDE: claude,
+            AssistantKind.GEMINI: gemini,
+        },
         codex_only=codex_only,
         claude_only=claude_only,
     )
@@ -242,11 +288,25 @@ def test_installs_selected_detected_adapters(
     assert tuple(result.kind for result in results) == expected
     assert codex.calls == (1 if AssistantKind.CODEX in expected else 0)
     assert claude.calls == (1 if AssistantKind.CLAUDE in expected else 0)
+    assert gemini.calls == (1 if AssistantKind.GEMINI in expected else 0)
 
 
 def test_adapter_selection_rejects_conflicting_overrides() -> None:
     with pytest.raises(SetupError, match="cannot be used together"):
         install_adapters((), {}, codex_only=True, claude_only=True)
+
+
+def test_adapter_selection_supports_explicit_gemini_target(tmp_path: Path) -> None:
+    gemini = RecordingInstaller(AssistantKind.GEMINI, tmp_path / "gemini")
+
+    results = install_adapters(
+        (AssistantKind.CODEX, AssistantKind.GEMINI),
+        {AssistantKind.GEMINI: gemini},
+        gemini_only=True,
+    )
+
+    assert tuple(result.kind for result in results) == (AssistantKind.GEMINI,)
+    assert gemini.calls == 1
 
 
 def test_adapter_selection_rejects_undetected_explicit_target() -> None:
