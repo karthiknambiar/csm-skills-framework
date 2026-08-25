@@ -339,6 +339,8 @@ try {
     $env:CSAF_DATA_ROOT = $dataRoot
     $env:CSAF_OFFICECLI = $officecliPath
     $env:OFFICECLI_SKIP_UPDATE = "1"
+    $env:PYTHONPATH = Join-Path $runtimePath "site-packages"
+    $env:PYTHONNOUSERSITE = "1"
     if (Test-Path Variable:PSNativeCommandArgumentPassing) {
         $PSNativeCommandArgumentPassing = "Legacy"
     }

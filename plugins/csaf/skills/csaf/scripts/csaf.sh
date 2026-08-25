@@ -322,7 +322,9 @@ assert_real_path_chain "$officecli_path" file
 CSAF_DATA_ROOT=$data_root
 CSAF_OFFICECLI=$officecli_path
 OFFICECLI_SKIP_UPDATE=1
-export CSAF_DATA_ROOT CSAF_OFFICECLI OFFICECLI_SKIP_UPDATE
+PYTHONPATH=$runtime_path/site-packages
+PYTHONNOUSERSITE=1
+export CSAF_DATA_ROOT CSAF_OFFICECLI OFFICECLI_SKIP_UPDATE PYTHONPATH PYTHONNOUSERSITE
 
 update_output=$("$runtime_launcher" setup check-update 2>/dev/null) || update_output=""
 case "$update_output" in

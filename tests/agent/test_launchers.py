@@ -144,7 +144,8 @@ def test_powershell_launcher_preserves_argv_and_json_stdout(tmp_path: Path) -> N
         "import json,os,sys;"
         "open(os.environ['CSAF_TEST_LOG'],'a',encoding='utf-8').write(json.dumps({"
         "'args':sys.argv[1:],'office':os.environ.get('CSAF_OFFICECLI'),"
-        "'skip':os.environ.get('OFFICECLI_SKIP_UPDATE')})+'\\n')"
+        "'skip':os.environ.get('OFFICECLI_SKIP_UPDATE'),"
+        "'pythonpath':os.environ.get('PYTHONPATH')})+'\\n')"
     )
     (tmp_path / "setup").write_text(
         recorder + ";print('Update available. token=must-not-leak')", encoding="utf-8"
@@ -157,6 +158,7 @@ def test_powershell_launcher_preserves_argv_and_json_stdout(tmp_path: Path) -> N
         {
             "CSAF_DATA_ROOT": str(data_root) + os.sep,
             "CSAF_TEST_LOG": str(log),
+            "PYTHONPATH": str(tmp_path / "mutable-bootstrap"),
         }
     )
 
@@ -186,8 +188,18 @@ def test_powershell_launcher_preserves_argv_and_json_stdout(tmp_path: Path) -> N
     assert "must-not-leak" not in completed.stderr
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert calls == [
-        {"args": ["check-update"], "office": str(officecli), "skip": "1"},
-        {"args": ["acme", "--days", "90"], "office": str(officecli), "skip": "1"},
+        {
+            "args": ["check-update"],
+            "office": str(officecli),
+            "skip": "1",
+            "pythonpath": str(runtime / "site-packages"),
+        },
+        {
+            "args": ["acme", "--days", "90"],
+            "office": str(officecli),
+            "skip": "1",
+            "pythonpath": str(runtime / "site-packages"),
+        },
     ]
 
 
@@ -202,7 +214,7 @@ def test_posix_launcher_preserves_argv_and_json_stdout(tmp_path: Path) -> None:
     launcher = runtime / "csaf"
     launcher.write_text(
         "#!/bin/sh\n"
-        'printf \'%s|%s|%s\\n\' "$*" "$CSAF_OFFICECLI" "$OFFICECLI_SKIP_UPDATE" '
+        'printf \'%s|%s|%s|%s\\n\' "$*" "$CSAF_OFFICECLI" "$OFFICECLI_SKIP_UPDATE" "$PYTHONPATH" '
         '>> "$CSAF_TEST_LOG"\n'
         'if [ "$1" = setup ]; then\n'
         "  printf '%s\\n' 'Update available. token=must-not-leak'\n"
@@ -225,6 +237,7 @@ def test_posix_launcher_preserves_argv_and_json_stdout(tmp_path: Path) -> None:
         {
             "CSAF_DATA_ROOT": data_root_text + "/",
             "CSAF_TEST_LOG": posix(log),
+            "PYTHONPATH": posix(tmp_path / "mutable-bootstrap"),
         }
     )
 
@@ -250,9 +263,10 @@ def test_posix_launcher_preserves_argv_and_json_stdout(tmp_path: Path) -> None:
         "CSAF update available. Run csaf setup update after explicit consent."
     )
     assert "must-not-leak" not in completed.stderr
+    runtime_site_packages = f"{data_root_text}/versions/{VERSION}/site-packages"
     assert log.read_text(encoding="utf-8").splitlines() == [
-        f"setup check-update|{officecli_text}|1",
-        f"qbr generate acme --quarter 2026-Q3|{officecli_text}|1",
+        f"setup check-update|{officecli_text}|1|{runtime_site_packages}",
+        f"qbr generate acme --quarter 2026-Q3|{officecli_text}|1|{runtime_site_packages}",
     ]
 
 
@@ -446,6 +460,8 @@ def test_posix_rejects_controlled_symlink_before_outside_execution(
 def test_launchers_reject_invalid_nested_install_state_before_execution(
     tmp_path: Path, platform: str, mutation: str
 ) -> None:
+    if platform == "windows" and os.name != "nt":
+        pytest.skip("Windows launcher contract requires a Windows host")
     data_root = tmp_path / "data"
     runtime = data_root / "versions" / VERSION
     runtime.mkdir(parents=True)
@@ -528,6 +544,8 @@ def test_launchers_reject_invalid_nested_install_state_before_execution(
 def test_launchers_accept_valid_nonempty_nested_install_state(
     tmp_path: Path, platform: str
 ) -> None:
+    if platform == "windows" and os.name != "nt":
+        pytest.skip("Windows launcher contract requires a Windows host")
     data_root = tmp_path / "data"
     runtime = data_root / "versions" / VERSION
     extra_runtime = data_root / "versions" / "0.2.0"

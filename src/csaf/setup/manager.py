@@ -146,8 +146,12 @@ def _missing_runtime(bundle: Path, destination: Path, expected_version: Version)
 
 
 def _runtime_probe(runtime: Path, version: Version) -> bool:
-    del version
-    return (runtime / ("csaf.exe" if os.name == "nt" else "csaf")).is_file()
+    site_packages = runtime / "site-packages"
+    return (
+        (runtime / ("csaf.exe" if os.name == "nt" else "csaf")).is_file()
+        and (site_packages / "csaf" / "__init__.py").is_file()
+        and (site_packages / f"csaf-{version}.dist-info" / "METADATA").is_file()
+    )
 
 
 def _office_probe(path: Path, version: Version, minimum: Version) -> bool:
@@ -177,6 +181,8 @@ def _doctor(runtime: Path, officecli: Path, environment: dict[str, str]) -> bool
     executable = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
     process_environment = os.environ.copy()
     process_environment.update(environment)
+    process_environment["PYTHONPATH"] = str(runtime / "site-packages")
+    process_environment["PYTHONNOUSERSITE"] = "1"
     try:
         with tempfile.TemporaryFile() as output:
             completed = subprocess.run(
@@ -684,7 +690,8 @@ class ClaudeManagedAdapter:
                 )
             marketplace_before, plugin_before = self._state(client)
             client.install()
-            self.destination.mkdir(parents=True, exist_ok=True)
+            _prepare_private_parent(self.destination.parent)
+            self.destination.mkdir(exist_ok=True)
             if os.name != "nt":
                 os.chmod(self.destination, 0o700)
             receipt = {
@@ -1157,10 +1164,10 @@ class SetupManager:
                 except Exception as error:
                     raise SetupError("runtime staging failed") from error
                 candidate_runtime = self._staged_runtime(installed, transaction)
-                self._secure_runtime(candidate_runtime)
                 (candidate_runtime / _MARKER).write_text(
                     plan.runtime_asset.sha256 + "\n", encoding="ascii"
                 )
+                self._secure_runtime(candidate_runtime)
                 runtime_content = self._tree_digest(candidate_runtime)
             if need_office:
                 candidate_office = transaction / plan.officecli_path.name

@@ -590,6 +590,7 @@ def _install_runtime(
     bundle_root, requirements, wheelhouse = _validated_runtime_bundle(
         bundle, destination, expected_version
     )
+    site_packages = destination / "site-packages"
     environment = {
         key: os.environ[key]
         for key in ("SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR")
@@ -613,7 +614,7 @@ def _install_runtime(
         "--python",
         str(python_executable),
         "--target",
-        str(destination),
+        str(site_packages),
         "--offline",
         "--no-config",
         "--no-index",
@@ -649,8 +650,8 @@ def _install_runtime(
             details = item.lstat()
             if stat.S_ISLNK(details.st_mode) or getattr(details, "st_file_attributes", 0) & reparse:
                 raise SetupError("private runtime installation produced unsafe links")
-        package = destination / "csaf" / "__init__.py"
-        metadata = tuple(destination.glob("csaf-*.dist-info/METADATA"))
+        package = site_packages / "csaf" / "__init__.py"
+        metadata = tuple(site_packages.glob("csaf-*.dist-info/METADATA"))
         if not package.is_file() or len(metadata) != 1:
             raise SetupError("private runtime installation is incomplete")
         target_launcher = destination / _RUNTIME_LAUNCHER_NAME

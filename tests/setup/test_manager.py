@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -33,6 +34,11 @@ from csaf.setup.manager import (
 )
 
 PLATFORM = SupportedPlatform.WINDOWS_X64 if os.name == "nt" else SupportedPlatform.LINUX_X64
+
+
+def _secure_posix_fixture(path: Path, *, executable: bool = False) -> None:
+    if os.name != "nt":
+        os.chmod(path, 0o700 if path.is_dir() or executable else 0o600)
 
 
 def _asset(payload: bytes, name: str) -> dict[str, Any]:
@@ -105,6 +111,8 @@ class Harness:
         destination.mkdir(parents=True)
         launcher = destination / ("csaf.exe" if os.name == "nt" else "csaf")
         launcher.write_bytes(b"launcher")
+        _secure_posix_fixture(destination)
+        _secure_posix_fixture(launcher, executable=True)
         return launcher
 
     def runtime_probe(self, runtime: Path, _version: object) -> bool:
@@ -160,8 +168,13 @@ class Adapter:
                 activated=self.activated_failure,
             )
         self.destination.mkdir(parents=True, exist_ok=True)
-        (self.destination / "asset.bin").write_bytes(asset.read_bytes())
-        (self.destination / "version.txt").write_text(str(version), encoding="ascii")
+        marker = self.destination / "asset.bin"
+        version_marker = self.destination / "version.txt"
+        marker.write_bytes(asset.read_bytes())
+        version_marker.write_text(str(version), encoding="ascii")
+        _secure_posix_fixture(self.destination)
+        _secure_posix_fixture(marker)
+        _secure_posix_fixture(version_marker)
         return AdapterInstallResult(self.kind, self.destination)
 
     def health(self, target: Path, version: object, sha256: str) -> bool:
@@ -219,7 +232,11 @@ def _active(root: Path, version: str = "0.0.9") -> None:
 
     runtime = root / "versions" / version
     runtime.mkdir(parents=True)
-    (runtime / ("csaf.exe" if os.name == "nt" else "csaf")).write_bytes(b"old")
+    launcher = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
+    launcher.write_bytes(b"old")
+    for directory in (root, runtime.parent, runtime):
+        _secure_posix_fixture(directory)
+    _secure_posix_fixture(launcher, executable=True)
     write_json_atomic(
         root / "current.json",
         {"schema_version": 1, "active_version": version, "runtime_path": str(runtime)},
@@ -309,6 +326,50 @@ def test_diagnostics_run_before_state_and_activation(tmp_path: Path) -> None:
     assert names[-1] == "write"
     assert harness.effects[-1][1] == "current.json"
     assert ("write", "current.json") in harness.effects
+
+
+def test_production_doctor_forces_versioned_site_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from csaf.setup.manager import _doctor
+
+    runtime = tmp_path / "runtime"
+    site_packages = runtime / "site-packages"
+    site_packages.mkdir(parents=True)
+    launcher = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
+    launcher.write_bytes(b"launcher")
+    officecli = tmp_path / ("officecli.exe" if os.name == "nt" else "officecli")
+    officecli.write_bytes(b"office")
+    captured: dict[str, str] = {}
+
+    def run(_arguments: object, **options: object) -> object:
+        captured.update(options["env"])  # type: ignore[arg-type]
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr("csaf.setup.manager.subprocess.run", run)
+
+    assert _doctor(runtime, officecli, {"PYTHONPATH": str(tmp_path / "mutable-bootstrap")})
+    assert captured["PYTHONPATH"] == str(site_packages)
+    assert captured["PYTHONNOUSERSITE"] == "1"
+
+
+def test_production_runtime_probe_requires_complete_versioned_closure(tmp_path: Path) -> None:
+    from csaf.setup.manager import _runtime_probe
+
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / ("csaf.exe" if os.name == "nt" else "csaf")).write_bytes(b"launcher")
+
+    assert _runtime_probe(runtime, Version("0.1.0")) is False
+
+    site_packages = runtime / "site-packages"
+    (site_packages / "csaf").mkdir(parents=True)
+    (site_packages / "csaf" / "__init__.py").write_text("", encoding="utf-8")
+    metadata = site_packages / "csaf-0.1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Name: csaf\nVersion: 0.1.0\n", encoding="utf-8")
+
+    assert _runtime_probe(runtime, Version("0.1.0")) is True
 
 
 @pytest.mark.parametrize("failure", ["download", "runtime", "doctor", "state"])
@@ -438,6 +499,20 @@ def test_health_check_requires_verified_runtime_marker(tmp_path: Path) -> None:
     marker.write_text("0" * 64, encoding="ascii")
 
     assert manager.plan_install(_manifest(), requested_targets=None).already_healthy is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission contract")
+def test_install_secures_runtime_launcher_and_marker(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    manager, _ = _manager(tmp_path, harness, detected=())
+    plan = manager.plan_install(_manifest(), requested_targets=None)
+
+    assert manager.install(plan, consent=lambda _: True).status is SetupStatus.READY
+
+    launcher = plan.runtime_path / "csaf"
+    marker = plan.runtime_path / ".csaf-runtime.sha256"
+    assert stat.S_IMODE(launcher.stat().st_mode) == 0o700
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
 
 
 def test_doctor_failure_is_sanitized(tmp_path: Path) -> None:
@@ -1396,6 +1471,7 @@ def test_setup_lock_recovers_after_subprocess_crash(tmp_path: Path) -> None:
     manager, _ = _manager(tmp_path, harness, detected=())
     data = tmp_path / "data"
     data.mkdir()
+    _secure_posix_fixture(data)
     ready = tmp_path / "ready"
     script = (
         "import time; from pathlib import Path; "
@@ -1437,6 +1513,7 @@ def test_doctor_recovers_interrupted_runtime_backup_before_stale_cleanup(tmp_pat
     current_before = read_json(tmp_path / "data" / "current.json")
     stale = tmp_path / "data" / ".staging" / "crashed"
     stale.mkdir(parents=True)
+    _secure_posix_fixture(stale)
     backup = stale / "previous-runtime"
     os.replace(plan.runtime_path, backup)
     write_json_atomic(stale / "previous-state.json", state_before)
@@ -1626,6 +1703,10 @@ def _actual_crash_manager(
     checkpoint: Any = None,
 ) -> tuple[SetupManager, CodexManagedAdapter, ClaudeManagedAdapter, PersistedClaudeRunner]:
     harness = Harness(root)
+    adapter_root = root / "data" / "adapters"
+    adapter_root.mkdir(parents=True, exist_ok=True)
+    _secure_posix_fixture(root / "data")
+    _secure_posix_fixture(adapter_root)
     original_download = harness.download
 
     def download(asset: object, destination: Path) -> Path:

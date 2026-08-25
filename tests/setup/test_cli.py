@@ -954,6 +954,10 @@ def _runtime_bundle(
     return bundle
 
 
+def _regular_python_executable() -> Path:
+    return Path(sys.executable).resolve(strict=True)
+
+
 def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) -> None:
     from csaf.setup import cli
 
@@ -968,9 +972,10 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
 
     def run(arguments: list[str], **options: Any) -> SimpleNamespace:
         calls.append((arguments, options))
-        (destination / "csaf").mkdir(parents=True)
-        (destination / "csaf" / "__init__.py").write_text("", encoding="utf-8")
-        metadata = destination / "csaf-0.2.0.dist-info"
+        site_packages = destination / "site-packages"
+        (site_packages / "csaf").mkdir(parents=True)
+        (site_packages / "csaf" / "__init__.py").write_text("", encoding="utf-8")
+        metadata = site_packages / "csaf-0.2.0.dist-info"
         metadata.mkdir()
         (metadata / "METADATA").write_text("Name: csaf\n", encoding="utf-8")
         return SimpleNamespace(returncode=0)
@@ -980,7 +985,7 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
         destination,
         uv_path=uv,
         launcher_path=launcher,
-        python_executable=Path(sys.executable),
+        python_executable=_regular_python_executable(),
         expected_version=Version("0.1.0"),
         runner=run,
     )
@@ -991,9 +996,9 @@ def test_runtime_installer_uses_private_uv_offline_exact_argv(tmp_path: Path) ->
         "pip",
         "install",
         "--python",
-        str(Path(sys.executable)),
+        str(_regular_python_executable()),
         "--target",
-        str(destination),
+        str(destination / "site-packages"),
         "--offline",
         "--no-config",
         "--no-index",
@@ -1033,7 +1038,7 @@ def test_runtime_installer_rejects_inner_version_mismatch_before_process(tmp_pat
             tmp_path / "runtime",
             uv_path=uv,
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=run,
         )
@@ -1057,7 +1062,7 @@ def test_runtime_installer_rejects_bare_wheel_before_process(tmp_path: Path) -> 
             tmp_path / "runtime",
             uv_path=uv,
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()),
         )
@@ -1078,7 +1083,7 @@ def test_runtime_installer_rejects_extra_bundle_member(tmp_path: Path) -> None:
             tmp_path / "runtime",
             uv_path=uv,
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()),
         )
@@ -1104,7 +1109,7 @@ def test_runtime_installer_rejects_missing_private_uv_before_process(tmp_path: P
             tmp_path / "runtime",
             uv_path=tmp_path / "missing-uv",
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=run,
         )
@@ -1134,7 +1139,7 @@ def test_runtime_installer_translates_process_failure_without_output(
             tmp_path / "runtime",
             uv_path=uv,
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=run,
         )
@@ -1183,7 +1188,7 @@ def test_runtime_installer_rejects_incomplete_install(tmp_path: Path) -> None:
             destination,
             uv_path=uv,
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=run,
         )
@@ -1207,7 +1212,7 @@ def test_runtime_installer_translates_timeout(tmp_path: Path) -> None:
             tmp_path / "runtime",
             uv_path=uv,
             launcher_path=launcher,
-            python_executable=Path(sys.executable),
+            python_executable=_regular_python_executable(),
             expected_version=Version("0.1.0"),
             runner=run,
         )
