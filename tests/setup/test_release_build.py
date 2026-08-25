@@ -1136,7 +1136,20 @@ def test_console_origin_is_proved_before_installed_console(
     manifest = tmp_path / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
     proof = tmp_path / "proof"
+    bootstrap_python = tmp_path / "bootstrap/bin/python"
+    bootstrap_console = tmp_path / "bootstrap/bin/csaf"
     calls: list[str] = []
+
+    def fake_bootstrap(
+        root: Path, source_console: Path, python_executable: Path
+    ) -> tuple[Path, Path]:
+        assert root == tmp_path / "bootstrap"
+        assert source_console == console
+        assert python_executable == Path(sys.executable)
+        bootstrap_python.parent.mkdir(parents=True)
+        bootstrap_python.write_bytes(b"python")
+        bootstrap_console.write_bytes(b"console")
+        return bootstrap_python, bootstrap_console
 
     def fake_run(
         command: list[str], *, env: dict[str, str], timeout: int
@@ -1147,11 +1160,13 @@ def test_console_origin_is_proved_before_installed_console(
             proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, "CSAF_RUNTIME_IMPORT_OK", "")
         calls.append("console")
+        assert command[:2] == [str(bootstrap_python), str(bootstrap_console)]
         assert not proof.exists()
         proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "ready", "")
 
     monkeypatch.setattr(native_verifier, "_run", fake_run)
+    monkeypatch.setattr(native_verifier, "_prepare_console_bootstrap", fake_bootstrap)
 
     result = native_verifier._run_installed_console(
         console=console,
@@ -1159,10 +1174,43 @@ def test_console_origin_is_proved_before_installed_console(
         site_packages=site_packages,
         env={},
         proof=proof,
+        bootstrap_root=tmp_path / "bootstrap",
+        platform="linux-x64",
     )
 
     assert result.returncode == 0
     assert calls == ["origin", "console"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX venv interpreters use symbolic links")
+def test_console_bootstrap_replaces_posix_venv_symlinks_with_regular_files(
+    tmp_path: Path,
+) -> None:
+    smoke = tmp_path / "smoke"
+    scripts = smoke / "bin"
+    scripts.mkdir(parents=True)
+    source_python = scripts / "python"
+    source_python.symlink_to(Path(sys.executable).resolve(strict=True))
+    source_console = scripts / "csaf"
+    source_console.write_bytes(b"console")
+    source_console.chmod(0o700)
+    (smoke / "pyvenv.cfg").write_text(
+        f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n",
+        encoding="utf-8",
+    )
+
+    bootstrap_python, bootstrap_console = native_verifier._prepare_console_bootstrap(
+        tmp_path / "bootstrap", source_console, source_python
+    )
+
+    assert bootstrap_python == tmp_path / "bootstrap/bin/python"
+    assert bootstrap_console == tmp_path / "bootstrap/bin/csaf"
+    assert native_verifier._regular(bootstrap_python)
+    assert native_verifier._regular(bootstrap_console)
+    assert native_verifier._regular(tmp_path / "bootstrap/pyvenv.cfg")
+    assert stat.S_IMODE((tmp_path / "bootstrap").stat().st_mode) == 0o700
+    assert stat.S_IMODE(bootstrap_python.stat().st_mode) == 0o700
+    assert bootstrap_python.read_bytes() == Path(sys.executable).resolve(strict=True).read_bytes()
 
 
 def test_verifier_workspace_is_created_beside_validated_release(

@@ -380,6 +380,70 @@ def _prepare_data_root(data: Path) -> Path:
     return bin_directory
 
 
+def _prepare_console_bootstrap(
+    root: Path, console: Path, python_executable: Path
+) -> tuple[Path, Path]:
+    """Mirror a POSIX venv with regular bootstrap executables."""
+    console = _safe_existing_path(console, "installed console bootstrap verification failed")
+    if not _regular(console):
+        raise NativeVerificationError("installed console bootstrap verification failed")
+
+    supplied_python = Path(os.path.abspath(os.fspath(python_executable)))
+    _safe_existing_path(supplied_python.parent, "installed console bootstrap verification failed")
+    try:
+        resolved_python = supplied_python.resolve(strict=True)
+    except OSError as exc:
+        raise NativeVerificationError("installed console bootstrap verification failed") from exc
+    resolved_python = _safe_existing_path(
+        resolved_python, "installed console bootstrap verification failed"
+    )
+    if not _regular(resolved_python):
+        raise NativeVerificationError("installed console bootstrap verification failed")
+
+    venv_root = _safe_existing_path(
+        supplied_python.parent.parent, "installed console bootstrap verification failed"
+    )
+    configuration = _safe_existing_path(
+        venv_root / "pyvenv.cfg", "installed console bootstrap verification failed"
+    )
+    if not _regular(configuration):
+        raise NativeVerificationError("installed console bootstrap verification failed")
+
+    root = Path(root)
+    parent = _safe_existing_path(root.parent, "installed console bootstrap verification failed")
+    root = parent / root.name
+    try:
+        root.mkdir(mode=0o700)
+        root.chmod(0o700)
+        scripts = root / "bin"
+        scripts.mkdir(mode=0o700)
+        scripts.chmod(0o700)
+    except OSError as exc:
+        raise NativeVerificationError("installed console bootstrap verification failed") from exc
+
+    def copy_regular(source: Path, destination: Path, mode: int) -> Path:
+        try:
+            with source.open("rb") as incoming, destination.open("xb") as outgoing:
+                shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+            destination.chmod(mode)
+        except OSError as exc:
+            raise NativeVerificationError(
+                "installed console bootstrap verification failed"
+            ) from exc
+        if (
+            not _regular(destination)
+            or destination.stat().st_size != source.stat().st_size
+            or _hash(destination) != _hash(source)
+        ):
+            raise NativeVerificationError("installed console bootstrap verification failed")
+        return destination
+
+    copy_regular(configuration, root / "pyvenv.cfg", 0o600)
+    bootstrap_python = copy_regular(resolved_python, scripts / "python", 0o700)
+    bootstrap_console = copy_regular(console, scripts / "csaf", 0o700)
+    return bootstrap_python, bootstrap_console
+
+
 def _run(
     command: list[str], *, env: dict[str, str], timeout: int
 ) -> subprocess.CompletedProcess[str]:
@@ -417,7 +481,15 @@ def _verify_import_origin(site_packages: Path, env: dict[str, str]) -> None:
 
 
 def _run_installed_console(
-    *, console: Path, manifest: Path, site_packages: Path, env: dict[str, str], proof: Path
+    *,
+    console: Path,
+    manifest: Path,
+    site_packages: Path,
+    env: dict[str, str],
+    proof: Path,
+    bootstrap_root: Path,
+    platform: str,
+    python_executable: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Prove the smoke import origin, then independently run the guarded console."""
     _verify_import_origin(site_packages, env)
@@ -425,9 +497,17 @@ def _run_installed_console(
         proof.unlink(missing_ok=False)
     except OSError as exc:
         raise NativeVerificationError("installed console egress proof verification failed") from exc
+    command = [str(console)]
+    if not platform.startswith("windows-"):
+        bootstrap_python, bootstrap_console = _prepare_console_bootstrap(
+            bootstrap_root,
+            console,
+            Path(sys.executable) if python_executable is None else python_executable,
+        )
+        command = [str(bootstrap_python), str(bootstrap_console)]
     return _run(
         [
-            str(console),
+            *command,
             "--database",
             ":memory:",
             "setup",
@@ -695,6 +775,8 @@ def verify_native_install(
                 site_packages=console_site_packages,
                 env=env,
                 proof=proof,
+                bootstrap_root=root / "console-bootstrap",
+                platform=platform,
             )
             if install.returncode != 0:
                 raise NativeVerificationError(
