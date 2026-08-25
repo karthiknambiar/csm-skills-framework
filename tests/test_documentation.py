@@ -149,6 +149,23 @@ def test_readme_is_native_first_and_follows_the_required_order() -> None:
     assert readme.index("## Development") > readme.index("## Use CSAF in natural language")
 
 
+def test_readme_prominently_marks_native_integration_as_testing() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+    notice = (
+        "> **Testing status:** CSAF’s native agent integration is still being tested. "
+        "Use non-production data, review each setup plan before consenting, and report "
+        "unexpected behavior."
+    )
+
+    notice_position = readme.index(notice)
+    opening_position = readme.index("CSAF turns local customer context")
+    officecli_position = readme.index("OfficeCLI is mandatory")
+    install_position = readme.index("## Install")
+
+    assert opening_position < notice_position < officecli_position
+    assert notice_position < install_position
+
+
 def test_readme_installers_are_tagged_and_consent_first() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
     installer_urls = re.findall(

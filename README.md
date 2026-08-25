@@ -2,6 +2,8 @@
 
 CSAF turns local customer context into grounded account briefs, meeting follow-ups, and QBR documents from Codex or Claude Code.
 
+> **Testing status:** CSAF’s native agent integration is still being tested. Use non-production data, review each setup plan before consenting, and report unexpected behavior.
+
 > **OfficeCLI is mandatory for QBR PowerPoint and Word output.** Native setup explains every destination and network action, then asks for explicit consent before it installs the stable pinned OfficeCLI 1.0.143 binary. No API key is required. Account Brief and Meeting Copilot work without OfficeCLI.
 
 ## Install
