@@ -223,10 +223,13 @@ def test_install_discloses_complete_plan_before_prompt_and_decline_is_exit_two(
         "Assistants: codex, claude, gemini",
         str(manager.root / "versions" / "0.2.0"),
         str(manager.root / "officecli" / "1.0.143" / "officecli"),
+        f"Claude CSAF receipt destination: {manager.root / 'adapters' / 'claude'}",
+        "Claude Code adapter: user-scoped marketplace/plugin managed by Claude CLI",
         "Network: HTTPS downloads of verified CSAF, OfficeCLI, and adapter assets",
     ):
         assert disclosure in result.stdout
         assert result.stdout.index(disclosure) < prompt
+    assert "Claude adapter destination:" not in result.stdout
     assert [call[0] for call in manager.calls] == ["plan_install"]
 
 

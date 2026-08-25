@@ -559,6 +559,7 @@ $UvPath = Join-Path $DataRoot "bin\uv.exe"
 $PythonRoot = Join-Path $DataRoot "python"
 $UvCache = Join-Path $DataRoot "cache\uv"
 $OfficeCLIPath = Join-Path $DataRoot "officecli\$OfficeCLIVersion\officecli.exe"
+$RuntimePath = Join-Path $DataRoot "versions\$($ReleaseManifest.version)"
 $CodexAdapterPath = Join-Path $CodexSkillRoot "csaf"
 $ClaudeAdapterPath = Join-Path $DataRoot "adapters\claude"
 $GeminiAdapterPath = Join-Path $HOME ".gemini\skills\csaf"
@@ -569,12 +570,14 @@ Write-Output "Targets: $TargetSummary"
 Write-Output "Data root: $DataRoot"
 Write-Output "Private uv 0.12.3: $UvPath"
 Write-Output "Private Python 3.12.13: $PythonRoot"
+Write-Output "CSAF runtime destination: $RuntimePath"
 Write-Output "Mandatory OfficeCLI 1.0.143: $OfficeCLIPath"
 if ($Targets.Contains("codex")) {
     Write-Output "Codex adapter destination: $CodexAdapterPath"
 }
 if ($Targets.Contains("claude")) {
-    Write-Output "Claude adapter destination: $ClaudeAdapterPath"
+    Write-Output "Claude CSAF receipt destination: $ClaudeAdapterPath"
+    Write-Output "Claude Code adapter: user-scoped marketplace/plugin managed by Claude CLI"
 }
 if ($Targets.Contains("gemini")) {
     Write-Output "Gemini adapter destination: $GeminiAdapterPath"
@@ -582,7 +585,7 @@ if ($Targets.Contains("gemini")) {
 Write-Output "OfficeCLI is mandatory because QBR PowerPoint and Word generation cannot work without it."
 Write-Output "CSAF and OfficeCLI run locally with no API key or hosted AI service."
 Write-Output "Release source: $ManifestSource"
-Write-Output "Network: verified HTTPS release assets only; normal installed operation is offline."
+Write-Output "Network: verified HTTPS CSAF, OfficeCLI, adapter, and uv 0.12.3 release assets; uv-managed Python 3.12.13 download; normal installed operation is offline."
 
 if ($DryRun) {
     Write-Output "Dry run complete; no downloads or filesystem changes were made."

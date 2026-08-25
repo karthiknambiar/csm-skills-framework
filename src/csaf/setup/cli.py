@@ -775,10 +775,16 @@ def _show_plan(plan: InstallPlan, *, action: str, source: str | None = None) -> 
     typer.echo(f"CSAF runtime destination: {_display_text(plan.runtime_path)}")
     typer.echo(f"OfficeCLI destination: {_display_text(plan.officecli_path)}")
     for kind in plan.targets:
-        typer.echo(
-            f"{kind.value.title()} adapter destination: "
-            f"{_display_text(plan.adapter_destinations[kind])}"
-        )
+        if kind is AssistantKind.CLAUDE:
+            typer.echo(
+                f"Claude CSAF receipt destination: {_display_text(plan.adapter_destinations[kind])}"
+            )
+            typer.echo("Claude Code adapter: user-scoped marketplace/plugin managed by Claude CLI")
+        else:
+            typer.echo(
+                f"{kind.value.title()} adapter destination: "
+                f"{_display_text(plan.adapter_destinations[kind])}"
+            )
     typer.echo(f"Release source: {_display_manifest_source(source)}")
     typer.echo("Network: HTTPS downloads of verified CSAF, OfficeCLI, and adapter assets")
     typer.echo(f"Requested action: {action}")

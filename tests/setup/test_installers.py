@@ -347,9 +347,15 @@ def test_powershell_dry_run_discloses_directory_detected_adapter_destinations(
 
     assert result.returncode == 0, result.stderr
     assert "Targets: codex, claude, gemini" in result.stdout
+    assert f"CSAF runtime destination: {data_root / 'versions' / '0.1.0'}" in result.stdout
     assert f"Codex adapter destination: {home / '.codex' / 'skills' / 'csaf'}" in result.stdout
-    assert f"Claude adapter destination: {data_root / 'adapters' / 'claude'}" in result.stdout
+    assert f"Claude CSAF receipt destination: {data_root / 'adapters' / 'claude'}" in result.stdout
+    assert (
+        "Claude Code adapter: user-scoped marketplace/plugin managed by Claude CLI" in result.stdout
+    )
     assert f"Gemini adapter destination: {home / '.gemini' / 'skills' / 'csaf'}" in result.stdout
+    assert "uv-managed Python 3.12.13 download" in result.stdout
+    assert "verified HTTPS release assets only" not in result.stdout
     assert not data_root.exists()
 
 
@@ -447,9 +453,14 @@ def test_shell_plan_contract_matches_python_directory_detection_and_destinations
     assert 'codex_adapter_path="$codex_skill_root/csaf"' in source
     assert 'claude_adapter_path="$data_root/adapters/claude"' in source
     assert 'gemini_adapter_path="$HOME/.gemini/skills/csaf"' in source
+    assert 'runtime_path="$data_root/versions/$release_version"' in source
+    assert '"CSAF runtime destination: $runtime_path"' in source
     assert '"Codex adapter destination: $codex_adapter_path"' in source
-    assert '"Claude adapter destination: $claude_adapter_path"' in source
+    assert '"Claude CSAF receipt destination: $claude_adapter_path"' in source
+    assert '"Claude Code adapter: user-scoped marketplace/plugin managed by Claude CLI"' in source
     assert '"Gemini adapter destination: $gemini_adapter_path"' in source
+    assert "uv-managed Python 3.12.13 download" in source
+    assert "verified HTTPS release assets only" not in source
 
 
 @pytest.mark.parametrize(

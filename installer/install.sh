@@ -442,6 +442,7 @@ uv_path="$data_root/bin/uv"
 python_root="$data_root/python"
 uv_cache="$data_root/cache/uv"
 officecli_path="$data_root/officecli/$officecli_version/officecli"
+runtime_path="$data_root/versions/$release_version"
 codex_adapter_path="$codex_skill_root/csaf"
 claude_adapter_path="$data_root/adapters/claude"
 gemini_adapter_path="$HOME/.gemini/skills/csaf"
@@ -452,17 +453,20 @@ printf '%s\n' "Targets: $targets"
 printf '%s\n' "Data root: $data_root"
 printf '%s\n' "Private uv 0.12.3: $uv_path"
 printf '%s\n' "Private Python 3.12.13: $python_root"
+printf '%s\n' "CSAF runtime destination: $runtime_path"
 printf '%s\n' "Mandatory OfficeCLI 1.0.143: $officecli_path"
 [ "$codex_selected" -eq 0 ] ||
     printf '%s\n' "Codex adapter destination: $codex_adapter_path"
 [ "$claude_selected" -eq 0 ] ||
-    printf '%s\n' "Claude adapter destination: $claude_adapter_path"
+    printf '%s\n' "Claude CSAF receipt destination: $claude_adapter_path"
+[ "$claude_selected" -eq 0 ] ||
+    printf '%s\n' "Claude Code adapter: user-scoped marketplace/plugin managed by Claude CLI"
 [ "$gemini_selected" -eq 0 ] ||
     printf '%s\n' "Gemini adapter destination: $gemini_adapter_path"
 printf '%s\n' "OfficeCLI is mandatory because QBR PowerPoint and Word generation cannot work without it."
 printf '%s\n' "CSAF and OfficeCLI run locally with no API key or hosted AI service."
 printf '%s\n' "Release source: $manifest_source"
-printf '%s\n' "Network: verified HTTPS release assets only; normal installed operation is offline."
+printf '%s\n' "Network: verified HTTPS CSAF, OfficeCLI, adapter, and uv 0.12.3 release assets; uv-managed Python 3.12.13 download; normal installed operation is offline."
 
 if [ "$dry_run" -eq 1 ]; then
     printf '%s\n' "Dry run complete; no downloads or filesystem changes were made."
