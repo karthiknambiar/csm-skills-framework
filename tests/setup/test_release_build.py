@@ -686,6 +686,100 @@ def test_release_native_install_contract_rejects_one_bad_matrix_row() -> None:
         _assert_release_native_install_workflow(mutated)
 
 
+def _assert_prerelease_publication(source: str) -> None:
+    publish_header = "  publish:\n"
+    publish_start = source.index(publish_header)
+    publish_tail = source[publish_start + len(publish_header) :]
+    next_job_or_top_level = re.search(r"(?m)^(?:\S|  [A-Za-z0-9_-]+:)", publish_tail)
+    publish_end = (
+        publish_start + len(publish_header) + next_job_or_top_level.start()
+        if next_job_or_top_level
+        else len(source)
+    )
+    publish_job = source[publish_start:publish_end]
+    publication = (
+        "      - uses: softprops/action-gh-release@"
+        "6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1\n"
+        "        with:\n"
+        "          name: CSAF v0.1.0 (Testing Prerelease)\n"
+        "          prerelease: true\n"
+        "          make_latest: false\n"
+        "          body: |\n"
+        "            This is a testing prerelease and is not intended for production use. "
+        "The native agent integration is still being tested.\n"
+        "\n"
+        "            Review the installation and consent plan before proceeding. CSAF "
+        "proposes integration with Codex, Claude, and Gemini for all detected targets. "
+        "Installation of the pinned OfficeCLI 1.0.143 is mandatory and requires your consent.\n"
+        "\n"
+        "            Direct versioned v0.1.0 installer URLs remain available for Windows, "
+        "macOS, and Linux.\n"
+        "          files: release/*\n"
+        "          fail_on_unmatched_files: true\n"
+    )
+    assert publication in publish_job
+
+
+def test_prerelease_publication_requires_mandatory_pinned_officecli_with_consent() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+    mutated = source.replace(
+        "pinned OfficeCLI 1.0.143 is mandatory and requires your consent",
+        "pinned OfficeCLI 1.0.143 is optional and requires no consent",
+        1,
+    )
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_prerelease_publication(mutated)
+
+
+def test_prerelease_publication_cannot_be_satisfied_by_commented_metadata() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+    mutated = source.replace(
+        "          name: CSAF v0.1.0 (Testing Prerelease)\n"
+        "          prerelease: true\n"
+        "          make_latest: false\n",
+        "          # name: CSAF v0.1.0 (Testing Prerelease)\n"
+        "          # prerelease: true\n"
+        "          # make_latest: false\n",
+        1,
+    )
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_prerelease_publication(mutated)
+
+
+def test_prerelease_publication_requires_release_action_in_publish_job() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+    action_start = source.index("      - uses: softprops/action-gh-release@")
+    action_end = source.index("          fail_on_unmatched_files: true\n", action_start) + len(
+        "          fail_on_unmatched_files: true\n"
+    )
+    action = source[action_start:action_end]
+    without_publish_action = source[:action_start] + source[action_end:]
+    mutated = without_publish_action.replace("    steps:\n", "    steps:\n" + action, 1)
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_prerelease_publication(mutated)
+
+
+def test_prerelease_publication_rejects_top_level_block_scalar_decoy() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+    action_start = source.index("      - uses: softprops/action-gh-release@")
+    action_end = source.index("          fail_on_unmatched_files: true\n", action_start) + len(
+        "          fail_on_unmatched_files: true\n"
+    )
+    action = source[action_start:action_end]
+    without_publish_action = source[:action_start] + source[action_end:]
+    mutated = "env:\n  PRERELEASE_DECOY: |\n" + action + without_publish_action
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_prerelease_publication(mutated)
+
+
 def test_release_workflow_is_tag_gated_matrixed_and_scanned_before_upload() -> None:
     source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
 
@@ -695,11 +789,7 @@ def test_release_workflow_is_tag_gated_matrixed_and_scanned_before_upload() -> N
     assert "SHA256SUMS" in source
     assert "check_secrets.py" in source
     assert "softprops/action-gh-release" in source
-    assert "prerelease: true" in source
-    assert "make_latest: false" in source
-    assert "name: CSAF v0.1.0 (Testing Prerelease)" in source
-    assert "native agent integration is still being tested" in source
-    assert "versioned v0.1.0 installer URLs remain available" in source
+    _assert_prerelease_publication(source)
     assert "verify-native-install:" in source
     assert "--verify-release release --platform" in source
     assert "check_secrets.py" in source and "--package" in source
