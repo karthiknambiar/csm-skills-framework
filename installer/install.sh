@@ -405,14 +405,24 @@ early_runtime_size=$(printf '%s\n' "$manifest_fields" | sed -n '4p')
 [ -z "$requested_version" ] || [ "$release_version" = "$requested_version" ] ||
     fail "requested version does not match manifest"
 
+codex_skill_root="${CODEX_HOME:-$HOME/.codex}/skills"
+codex_selected=0
+claude_selected=0
 if [ "$codex_only" -eq 1 ]; then
     targets="codex"
+    codex_selected=1
 elif [ "$claude_only" -eq 1 ]; then
     targets="claude"
+    claude_selected=1
 else
     targets=""
-    if [ -n "${CODEX_HOME:-}" ] || command -v codex >/dev/null 2>&1; then targets="codex"; fi
-    if command -v claude >/dev/null 2>&1; then
+    if [ -n "${CODEX_HOME:-}" ] || [ -d "$codex_skill_root" ] ||
+        command -v codex >/dev/null 2>&1; then
+        targets="codex"
+        codex_selected=1
+    fi
+    if [ -d "$HOME/.claude" ] || command -v claude >/dev/null 2>&1; then
+        claude_selected=1
         if [ -n "$targets" ]; then targets="$targets, claude"; else targets="claude"; fi
     fi
     [ -n "$targets" ] || targets="runtime only (none detected)"
@@ -422,6 +432,8 @@ uv_path="$data_root/bin/uv"
 python_root="$data_root/python"
 uv_cache="$data_root/cache/uv"
 officecli_path="$data_root/officecli/$officecli_version/officecli"
+codex_adapter_path="$codex_skill_root/csaf"
+claude_adapter_path="$data_root/adapters/claude"
 
 printf '%s\n' "CSAF $release_version installation plan"
 printf '%s\n' "Platform: $platform"
@@ -430,6 +442,10 @@ printf '%s\n' "Data root: $data_root"
 printf '%s\n' "Private uv 0.12.3: $uv_path"
 printf '%s\n' "Private Python 3.12.13: $python_root"
 printf '%s\n' "Mandatory OfficeCLI 1.0.143: $officecli_path"
+[ "$codex_selected" -eq 0 ] ||
+    printf '%s\n' "Codex adapter destination: $codex_adapter_path"
+[ "$claude_selected" -eq 0 ] ||
+    printf '%s\n' "Claude adapter destination: $claude_adapter_path"
 printf '%s\n' "OfficeCLI is mandatory because QBR PowerPoint and Word generation cannot work without it."
 printf '%s\n' "CSAF and OfficeCLI run locally with no API key or hosted AI service."
 printf '%s\n' "Release source: $manifest_source"

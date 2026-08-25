@@ -300,6 +300,56 @@ def test_powershell_dry_run_is_offline_and_has_no_filesystem_effects(tmp_path: P
     assert not Path(data_root).exists()
 
 
+def test_powershell_dry_run_discloses_directory_detected_adapter_destinations(
+    tmp_path: Path,
+) -> None:
+    executable = _powershell()
+    if executable is None:
+        pytest.skip("PowerShell is unavailable")
+    home = tmp_path / "assistant home"
+    (home / ".codex" / "skills").mkdir(parents=True)
+    (home / ".claude").mkdir()
+    data_root = tmp_path / "CSAF data"
+    environment = {
+        **os.environ,
+        "CSAF_INSTALLER_NETWORK_FORBIDDEN": "1",
+        "CODEX_HOME": "",
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "PATH": "",
+    }
+
+    result = subprocess.run(
+        [
+            executable,
+            "-NoProfile",
+            "-File",
+            str(INSTALLER / "install.ps1"),
+            "--dry-run",
+            "--yes",
+            "--platform",
+            "windows-x64",
+            "--manifest",
+            str(MANIFEST),
+            "--data-root",
+            str(data_root),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=20,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Targets: codex, claude" in result.stdout
+    assert f"Codex adapter destination: {home / '.codex' / 'skills' / 'csaf'}" in result.stdout
+    assert f"Claude adapter destination: {data_root / 'adapters' / 'claude'}" in result.stdout
+    assert not data_root.exists()
+
+
 def test_powershell_whatif_is_an_offline_no_write_dry_run(tmp_path: Path) -> None:
     executable = _powershell()
     if executable is None:
@@ -382,6 +432,18 @@ def test_shell_syntax_and_dry_run_are_offline() -> None:
         assert absent.returncode == 0
     else:
         assert not Path(data_root).exists()
+
+
+def test_shell_plan_contract_matches_python_directory_detection_and_destinations() -> None:
+    source = (INSTALLER / "install.sh").read_text(encoding="utf-8")
+
+    assert 'codex_skill_root="${CODEX_HOME:-$HOME/.codex}/skills"' in source
+    assert '[ -d "$codex_skill_root" ]' in source
+    assert '[ -d "$HOME/.claude" ]' in source
+    assert 'codex_adapter_path="$codex_skill_root/csaf"' in source
+    assert 'claude_adapter_path="$data_root/adapters/claude"' in source
+    assert '"Codex adapter destination: $codex_adapter_path"' in source
+    assert '"Claude adapter destination: $claude_adapter_path"' in source
 
 
 @pytest.mark.parametrize(

@@ -524,6 +524,8 @@ else {
 }
 $ReleaseManifest = Get-ManifestObject $ManifestSource
 
+$CodexRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
+$CodexSkillRoot = Join-Path $CodexRoot "skills"
 $Targets = [Collections.Generic.List[string]]::new()
 if ($CodexOnly) {
     $Targets.Add("codex")
@@ -532,10 +534,13 @@ elseif ($ClaudeOnly) {
     $Targets.Add("claude")
 }
 else {
-    if ($env:CODEX_HOME -or (Get-Command codex -ErrorAction SilentlyContinue)) {
+    if ($env:CODEX_HOME -or
+        (Test-Path -LiteralPath $CodexSkillRoot -PathType Container) -or
+        (Get-Command codex -ErrorAction SilentlyContinue)) {
         $Targets.Add("codex")
     }
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
+    if ((Test-Path -LiteralPath (Join-Path $HOME ".claude") -PathType Container) -or
+        (Get-Command claude -ErrorAction SilentlyContinue)) {
         $Targets.Add("claude")
     }
 }
@@ -544,6 +549,8 @@ $UvPath = Join-Path $DataRoot "bin\uv.exe"
 $PythonRoot = Join-Path $DataRoot "python"
 $UvCache = Join-Path $DataRoot "cache\uv"
 $OfficeCLIPath = Join-Path $DataRoot "officecli\$OfficeCLIVersion\officecli.exe"
+$CodexAdapterPath = Join-Path $CodexSkillRoot "csaf"
+$ClaudeAdapterPath = Join-Path $DataRoot "adapters\claude"
 
 Write-Output "CSAF $($ReleaseManifest.version) installation plan"
 Write-Output "Platform: $SelectedPlatform"
@@ -552,6 +559,12 @@ Write-Output "Data root: $DataRoot"
 Write-Output "Private uv 0.12.3: $UvPath"
 Write-Output "Private Python 3.12.13: $PythonRoot"
 Write-Output "Mandatory OfficeCLI 1.0.143: $OfficeCLIPath"
+if ($Targets.Contains("codex")) {
+    Write-Output "Codex adapter destination: $CodexAdapterPath"
+}
+if ($Targets.Contains("claude")) {
+    Write-Output "Claude adapter destination: $ClaudeAdapterPath"
+}
 Write-Output "OfficeCLI is mandatory because QBR PowerPoint and Word generation cannot work without it."
 Write-Output "CSAF and OfficeCLI run locally with no API key or hosted AI service."
 Write-Output "Release source: $ManifestSource"
