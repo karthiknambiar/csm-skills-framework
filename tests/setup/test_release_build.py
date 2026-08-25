@@ -695,6 +695,11 @@ def test_release_workflow_is_tag_gated_matrixed_and_scanned_before_upload() -> N
     assert "SHA256SUMS" in source
     assert "check_secrets.py" in source
     assert "softprops/action-gh-release" in source
+    assert "prerelease: true" in source
+    assert "make_latest: false" in source
+    assert "name: CSAF v0.1.0 (Testing Prerelease)" in source
+    assert "native agent integration is still being tested" in source
+    assert "versioned v0.1.0 installer URLs remain available" in source
     assert "verify-native-install:" in source
     assert "--verify-release release --platform" in source
     assert "check_secrets.py" in source and "--package" in source

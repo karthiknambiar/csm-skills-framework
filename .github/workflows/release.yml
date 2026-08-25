@@ -191,5 +191,14 @@ jobs:
       - run: python scripts/check_secrets.py --worktree --tracked --history
       - uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
+          name: CSAF v0.1.0 (Testing Prerelease)
+          prerelease: true
+          make_latest: false
+          body: |
+            This is a testing prerelease and is not intended for production use. The native agent integration is still being tested.
+
+            Review the installation and consent plan before proceeding. CSAF proposes integration with Codex, Claude, and Gemini for all detected targets. Installation of the pinned OfficeCLI 1.0.143 is mandatory and requires your consent.
+
+            Direct versioned v0.1.0 installer URLs remain available for Windows, macOS, and Linux.
           files: release/*
           fail_on_unmatched_files: true
