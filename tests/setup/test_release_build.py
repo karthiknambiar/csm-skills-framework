@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -871,6 +872,51 @@ def test_verifier_cli_sanitizes_unexpected_failures(
     assert captured.out == ""
     assert captured.err == "native install verification failed\n"
     assert "must-not-leak" not in captured.err
+
+
+def test_verifier_cli_reports_only_allowlisted_failure_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail(**_: object) -> dict[str, object]:
+        raise NativeVerificationError(
+            "credential-looking detail must-not-leak", diagnostic="setup-install"
+        )
+
+    monkeypatch.setattr(native_verifier, "verify_native_install", fail)
+    code = native_verifier.main(
+        [
+            "--release-dir",
+            str(tmp_path),
+            "--dependencies",
+            str(tmp_path / "dependencies.json"),
+            "--platform",
+            "linux-x64",
+            "--uv",
+            str(tmp_path / "uv.tar.gz"),
+            "--officecli",
+            str(tmp_path / "officecli"),
+            "--csaf",
+            str(tmp_path / "csaf"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == "native install verification failed [setup-install]\n"
+    assert "must-not-leak" not in captured.err
+
+
+def test_native_verifier_prepares_private_posix_data_root(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+
+    bin_directory = native_verifier._prepare_data_root(data)
+
+    assert bin_directory == data / "bin"
+    assert bin_directory.is_dir()
+    if os.name == "posix":
+        assert stat.S_IMODE(data.stat().st_mode) == 0o700
+        assert stat.S_IMODE(bin_directory.stat().st_mode) == 0o700
 
 
 def test_egress_sitecustomize_refuses_direct_external_socket(tmp_path: Path) -> None:

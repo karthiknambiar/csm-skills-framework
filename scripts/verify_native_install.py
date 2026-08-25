@@ -26,10 +26,15 @@ from csaf.setup.types import InstallState
 
 PLATFORMS = ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "windows-x64")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_DIAGNOSTICS = frozenset({"setup-install"})
 
 
 class NativeVerificationError(RuntimeError):
     """The local release cannot prove a complete native installation."""
+
+    def __init__(self, message: str, *, diagnostic: str | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic if diagnostic in _SAFE_DIAGNOSTICS else None
 
 
 def _hash(path: Path) -> str:
@@ -296,6 +301,16 @@ if _proof:
     return policy
 
 
+def _prepare_data_root(data: Path) -> Path:
+    """Create the verifier-owned installer root with private POSIX permissions."""
+    data.mkdir(mode=0o700)
+    data.chmod(0o700)
+    bin_directory = data / "bin"
+    bin_directory.mkdir(mode=0o700)
+    bin_directory.chmod(0o700)
+    return bin_directory
+
+
 def _run(
     command: list[str], *, env: dict[str, str], timeout: int
 ) -> subprocess.CompletedProcess[str]:
@@ -453,10 +468,10 @@ def verify_native_install(
         data = root / "data"
         codex_home = root / "codex"
         served = root / "served"
-        (data / "bin").mkdir(parents=True)
+        bin_directory = _prepare_data_root(data)
         codex_home.mkdir()
         served.mkdir()
-        private_uv = data / "bin" / ("uv.exe" if platform.startswith("windows-") else "uv")
+        private_uv = bin_directory / ("uv.exe" if platform.startswith("windows-") else "uv")
         extracted_uv = _extract_uv(
             uv_archive, root / "uv-extracted", platform, str(uv_record["url"])
         )
@@ -564,7 +579,9 @@ def verify_native_install(
                 timeout=300,
             )
             if install.returncode != 0:
-                raise NativeVerificationError("native setup install did not become ready")
+                raise NativeVerificationError(
+                    "native setup install did not become ready", diagnostic="setup-install"
+                )
             if proof.read_text(encoding="utf-8") != "CSAF_EGRESS_GUARD_ACTIVE\n":
                 raise NativeVerificationError("installed console did not load egress policy")
             installed_office = (
@@ -610,6 +627,10 @@ def main(argv: list[str] | None = None) -> int:
             officecli_path=args.officecli,
             csaf_executable=args.csaf,
         )
+    except NativeVerificationError as exc:
+        diagnostic = f" [{exc.diagnostic}]" if exc.diagnostic else ""
+        print(f"native install verification failed{diagnostic}", file=sys.stderr)
+        return 2
     except Exception:
         print("native install verification failed", file=sys.stderr)
         return 2
