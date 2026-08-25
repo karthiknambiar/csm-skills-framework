@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 import zipfile
 from pathlib import Path
@@ -1063,6 +1064,127 @@ def test_egress_sitecustomize_refuses_direct_external_socket(tmp_path: Path) -> 
     assert result.stdout.strip() == "CSAF_EGRESS_BLOCKED"
 
 
+def test_guard_probe_leaves_policy_directory_exact_for_activated_environment(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "data/versions/0.1.0"
+    package = runtime / "site-packages/csaf"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("RUNTIME_COPY = True\n", encoding="utf-8")
+    launcher = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
+    launcher.write_bytes(b"launcher")
+    if os.name != "nt":
+        launcher.chmod(0o700)
+    guard = native_verifier._write_egress_guard(tmp_path / "guard")
+    environment = native_verifier._controlled_environment(
+        runtime / "site-packages", guard.parent, {"PYTHONPATH": str(tmp_path / "checkout")}
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.environ['CSAF_EGRESS_GUARD_ACTIVE'])"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert {path.name for path in guard.parent.iterdir()} == {"sitecustomize.py"}
+    activated = native_verifier._activated_environment(launcher, guard.parent, environment)
+    assert activated["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_console_environment_imports_only_from_smoke_site_packages(tmp_path: Path) -> None:
+    site_packages = tmp_path / "smoke/site-packages"
+    package = site_packages / "csaf"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("SMOKE_COPY = True\n", encoding="utf-8")
+    guard = native_verifier._write_egress_guard(tmp_path / "guard")
+    shadow = tmp_path / "checkout"
+    (shadow / "csaf").mkdir(parents=True)
+    (shadow / "csaf/__init__.py").write_text("SMOKE_COPY = False\n", encoding="utf-8")
+
+    environment = native_verifier._console_environment(
+        site_packages, guard.parent, {"PYTHONPATH": str(shadow)}
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "import csaf; print(csaf.__file__)"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    Path(result.stdout.strip()).resolve(strict=True).relative_to(site_packages.resolve(strict=True))
+    assert environment["PYTHONPATH"] == str(site_packages) + os.pathsep + str(guard.parent)
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert str(shadow) not in environment["PYTHONPATH"]
+
+
+def test_console_origin_is_proved_before_installed_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    site_packages = tmp_path / "smoke/site-packages"
+    (site_packages / "csaf").mkdir(parents=True)
+    (site_packages / "csaf/__init__.py").write_text("", encoding="utf-8")
+    console = tmp_path / ("csaf.exe" if os.name == "nt" else "csaf")
+    console.write_bytes(b"console")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    proof = tmp_path / "proof"
+    calls: list[str] = []
+
+    def fake_run(
+        command: list[str], *, env: dict[str, str], timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        del env, timeout
+        if command[0] == sys.executable:
+            calls.append("origin")
+            proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "CSAF_RUNTIME_IMPORT_OK", "")
+        calls.append("console")
+        assert not proof.exists()
+        proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "ready", "")
+
+    monkeypatch.setattr(native_verifier, "_run", fake_run)
+
+    result = native_verifier._run_installed_console(
+        console=console,
+        manifest=manifest,
+        site_packages=site_packages,
+        env={},
+        proof=proof,
+    )
+
+    assert result.returncode == 0
+    assert calls == ["origin", "console"]
+
+
+def test_verifier_workspace_is_created_beside_validated_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = tmp_path / "release/0.1.0"
+    release.mkdir(parents=True)
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def fake_temporary_directory(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", fake_temporary_directory)
+
+    result = native_verifier._verification_workspace(release)
+
+    assert result is sentinel
+    assert captured == {"prefix": "csaf-native-ready-", "dir": release.parent}
+
+
 def _activated_state(data: Path, runtime: Path, version: str) -> None:
     (data / "current.json").write_text(
         json.dumps({"schema_version": 1, "active_version": version, "runtime_path": str(runtime)}),
@@ -1107,6 +1229,8 @@ def test_activated_doctor_runs_through_runtime_launcher(
     runtime.mkdir(parents=True)
     site_packages = runtime / "site-packages"
     site_packages.mkdir()
+    (site_packages / "csaf").mkdir()
+    (site_packages / "csaf/__init__.py").write_text("", encoding="utf-8")
     launcher = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
     launcher.write_bytes(b"launcher")
     if os.name != "nt":
@@ -1144,6 +1268,7 @@ def test_activated_doctor_runs_through_runtime_launcher(
             "CSAF_EGRESS_GUARD_PROOF": str(proof),
             "PYTHONPATH": str(guard.parent) + os.pathsep + str(inherited),
         },
+        guard=guard.parent,
         proof=proof,
     )
     assert report == {"status": "ready"}
@@ -1175,6 +1300,7 @@ def test_activated_environment_imports_csaf_only_from_versioned_site_packages(
 
     environment = native_verifier._activated_environment(
         launcher,
+        guard.parent,
         {
             "PYTHONPATH": str(guard.parent) + os.pathsep + str(shadow),
             "CSAF_EGRESS_GUARD_PROOF": str(tmp_path / "proof"),

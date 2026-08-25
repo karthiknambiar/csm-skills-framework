@@ -15,6 +15,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 from pathlib import Path
@@ -302,23 +303,26 @@ if _proof:
     return policy
 
 
-def _activated_environment(launcher: Path, env: dict[str, str]) -> dict[str, str]:
-    """Isolate activated commands to the installed runtime and verifier guard."""
-    runtime = launcher.parent
-    site_packages = runtime / "site-packages"
+def _controlled_environment(
+    site_packages: Path, guard: Path, env: dict[str, str]
+) -> dict[str, str]:
+    """Return one environment limited to verified imports and the egress guard."""
+    site_packages = Path(site_packages)
     try:
         details = site_packages.lstat()
-        site_packages.resolve(strict=True).relative_to(runtime.resolve(strict=True))
-    except (OSError, ValueError) as exc:
-        raise NativeVerificationError("activated runtime import path verification failed") from exc
-    if _link_or_reparse(details) or not stat.S_ISDIR(details.st_mode):
-        raise NativeVerificationError("activated runtime import path verification failed")
+        site_packages = _safe_existing_path(
+            site_packages, "controlled interpreter path verification failed"
+        )
+    except OSError as exc:
+        raise NativeVerificationError("controlled interpreter path verification failed") from exc
+    if (
+        _link_or_reparse(details)
+        or not stat.S_ISDIR(details.st_mode)
+        or not _regular(site_packages / "csaf/__init__.py")
+    ):
+        raise NativeVerificationError("controlled interpreter path verification failed")
 
-    inherited = env.get("PYTHONPATH", "")
-    guard_text = inherited.split(os.pathsep, 1)[0]
-    if not guard_text:
-        raise NativeVerificationError("activated egress guard verification failed")
-    guard = _safe_existing_path(Path(guard_text), "activated egress guard verification failed")
+    guard = _safe_existing_path(Path(guard), "activated egress guard verification failed")
     policy = guard / "sitecustomize.py"
     try:
         guard_details = guard.lstat()
@@ -336,7 +340,34 @@ def _activated_environment(launcher: Path, env: dict[str, str]) -> dict[str, str
     activated = env.copy()
     activated["PYTHONPATH"] = str(site_packages) + os.pathsep + str(guard)
     activated["PYTHONNOUSERSITE"] = "1"
+    activated["PYTHONDONTWRITEBYTECODE"] = "1"
     return activated
+
+
+def _activated_environment(launcher: Path, guard: Path, env: dict[str, str]) -> dict[str, str]:
+    """Isolate activated commands to the installed runtime and verifier guard."""
+    runtime = launcher.parent
+    site_packages = runtime / "site-packages"
+    try:
+        site_packages.resolve(strict=True).relative_to(runtime.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise NativeVerificationError("activated runtime import path verification failed") from exc
+    return _controlled_environment(site_packages, guard, env)
+
+
+def _console_environment(site_packages: Path, guard: Path, env: dict[str, str]) -> dict[str, str]:
+    """Isolate the installed console to the smoke interpreter environment."""
+    return _controlled_environment(site_packages, guard, env)
+
+
+def _verification_workspace(release_dir: Path) -> tempfile.TemporaryDirectory[str]:
+    """Create temporary verifier state beside the validated release workspace."""
+    parent = _safe_existing_path(
+        Path(release_dir).parent, "verification workspace path verification failed"
+    )
+    if not parent.is_dir():
+        raise NativeVerificationError("verification workspace path verification failed")
+    return tempfile.TemporaryDirectory(prefix="csaf-native-ready-", dir=parent)
 
 
 def _prepare_data_root(data: Path) -> Path:
@@ -365,6 +396,50 @@ def _run(
     if result.returncode not in (0, 2):
         raise NativeVerificationError("native verification command failed")
     return result
+
+
+def _verify_import_origin(site_packages: Path, env: dict[str, str]) -> None:
+    probe = _run(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib,sys,csaf; "
+            "pathlib.Path(csaf.__file__).resolve(strict=True).relative_to("
+            "pathlib.Path(sys.argv[1]).resolve(strict=True)); "
+            "print('CSAF_RUNTIME_IMPORT_OK')",
+            str(site_packages),
+        ],
+        env=env,
+        timeout=30,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "CSAF_RUNTIME_IMPORT_OK":
+        raise NativeVerificationError("controlled runtime import verification failed")
+
+
+def _run_installed_console(
+    *, console: Path, manifest: Path, site_packages: Path, env: dict[str, str], proof: Path
+) -> subprocess.CompletedProcess[str]:
+    """Prove the smoke import origin, then independently run the guarded console."""
+    _verify_import_origin(site_packages, env)
+    try:
+        proof.unlink(missing_ok=False)
+    except OSError as exc:
+        raise NativeVerificationError("installed console egress proof verification failed") from exc
+    return _run(
+        [
+            str(console),
+            "--database",
+            ":memory:",
+            "setup",
+            "install",
+            "--manifest",
+            str(manifest),
+            "--yes",
+            "--codex-only",
+        ],
+        env=env,
+        timeout=300,
+    )
 
 
 def _activated_launcher(data: Path, version: str, platform: str) -> Path:
@@ -408,31 +483,23 @@ def _activated_launcher(data: Path, version: str, platform: str) -> Path:
 
 
 def _verify_activated_runtime(
-    *, data: Path, version: str, platform: str, env: dict[str, str], proof: Path
+    *,
+    data: Path,
+    version: str,
+    platform: str,
+    env: dict[str, str],
+    guard: Path,
+    proof: Path,
 ) -> dict[str, Any]:
     launcher = _activated_launcher(data, version, platform)
-    activated_env = _activated_environment(launcher, env)
+    activated_env = _activated_environment(launcher, guard, env)
     try:
         proof.unlink(missing_ok=False)
     except OSError as exc:
         raise NativeVerificationError(
             "activated launcher egress proof verification failed"
         ) from exc
-    import_probe = _run(
-        [
-            sys.executable,
-            "-c",
-            "import pathlib,sys,csaf; "
-            "pathlib.Path(csaf.__file__).resolve(strict=True).relative_to("
-            "pathlib.Path(sys.argv[1]).resolve(strict=True)); "
-            "print('CSAF_RUNTIME_IMPORT_OK')",
-            str(launcher.parent / "site-packages"),
-        ],
-        env=activated_env,
-        timeout=30,
-    )
-    if import_probe.returncode != 0 or import_probe.stdout.strip() != "CSAF_RUNTIME_IMPORT_OK":
-        raise NativeVerificationError("activated runtime import verification failed")
+    _verify_import_origin(launcher.parent / "site-packages", activated_env)
     try:
         proof.unlink(missing_ok=False)
     except OSError as exc:
@@ -523,7 +590,7 @@ def verify_native_install(
     csaf = _safe_existing_path(Path(csaf_executable), "installed csaf launcher verification failed")
     if not _regular(csaf):
         raise NativeVerificationError("installed csaf launcher verification failed")
-    with tempfile.TemporaryDirectory(prefix="csaf-native-ready-") as temporary:
+    with _verification_workspace(release_dir) as temporary:
         root = Path(temporary)
         data = root / "data"
         codex_home = root / "codex"
@@ -586,7 +653,6 @@ def verify_native_install(
             )
             guard = _write_egress_guard(root / "egress-policy")
             env = os.environ.copy()
-            inherited_pythonpath = env.get("PYTHONPATH")
             env.update(
                 {
                     "CSAF_DATA_ROOT": str(data),
@@ -599,10 +665,10 @@ def verify_native_install(
                     "OFFICECLI_SKIP_UPDATE": "1",
                     "CSAF_INSTALLER_NETWORK_FORBIDDEN": "1",
                     "CSAF_EGRESS_GUARD_PROOF": str(root / "console-egress-proof"),
-                    "PYTHONPATH": str(guard.parent)
-                    + (os.pathsep + inherited_pythonpath if inherited_pythonpath else ""),
                 }
             )
+            console_site_packages = Path(sysconfig.get_path("purelib"))
+            env = _console_environment(console_site_packages, guard.parent, env)
             probe = _run(
                 [
                     sys.executable,
@@ -623,20 +689,12 @@ def verify_native_install(
                 raise NativeVerificationError("native egress policy verification failed")
             proof = root / "console-egress-proof"
             proof.unlink(missing_ok=False)
-            install = _run(
-                [
-                    str(csaf),
-                    "--database",
-                    ":memory:",
-                    "setup",
-                    "install",
-                    "--manifest",
-                    str(manifest_path),
-                    "--yes",
-                    "--codex-only",
-                ],
+            install = _run_installed_console(
+                console=csaf,
+                manifest=manifest_path,
+                site_packages=console_site_packages,
                 env=env,
-                timeout=300,
+                proof=proof,
             )
             if install.returncode != 0:
                 raise NativeVerificationError(
@@ -661,6 +719,7 @@ def verify_native_install(
                 version=version,
                 platform=platform,
                 env=env,
+                guard=guard.parent,
                 proof=proof,
             )
         finally:
