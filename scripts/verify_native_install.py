@@ -433,6 +433,12 @@ def _verify_activated_runtime(
     )
     if import_probe.returncode != 0 or import_probe.stdout.strip() != "CSAF_RUNTIME_IMPORT_OK":
         raise NativeVerificationError("activated runtime import verification failed")
+    try:
+        proof.unlink(missing_ok=False)
+    except OSError as exc:
+        raise NativeVerificationError(
+            "activated launcher egress proof verification failed"
+        ) from exc
     help_result = _run([str(launcher), "--help"], env=activated_env, timeout=30)
     if help_result.returncode != 0:
         raise NativeVerificationError("activated launcher help smoke failed")

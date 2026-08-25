@@ -1008,10 +1008,13 @@ def test_activated_doctor_runs_through_runtime_launcher(
         del timeout
         commands.append(command)
         environments.append(env)
-        proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
         if command[0] == sys.executable:
+            proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
             output = "CSAF_RUNTIME_IMPORT_OK"
         else:
+            if "--help" in command:
+                assert not proof.exists()
+                proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
             output = '{"status":"ready"}' if "doctor" in command else "0.1.0"
         return subprocess.CompletedProcess(command, 0, output, "")
 
