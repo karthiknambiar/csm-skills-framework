@@ -89,7 +89,7 @@ jobs:
             smoke-csaf: .native-smoke/bin/csaf
             verifier-python: .native-smoke/bin/python
           - runner: macos-latest
-            platform: macos-x64
+            platform: macos-arm64
             smoke-python: ../.native-smoke/bin/python
             smoke-csaf: .native-smoke/bin/csaf
             verifier-python: .native-smoke/bin/python

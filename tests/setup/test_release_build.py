@@ -568,6 +568,123 @@ def test_ci_pairs_macos_latest_with_the_arm64_bundle() -> None:
     assert "platform: macos-x64" not in source
 
 
+def _release_native_install_job(source: str) -> str:
+    marker = "  verify-native-install:\n"
+    assert source.count(marker) == 1
+    job = source.split(marker, 1)[1]
+    following_job = re.search(r"(?m)^  [a-zA-Z0-9_-]+:\s*$", job)
+    return job[: following_job.start()] if following_job else job
+
+
+def _release_native_install_matrix(source: str) -> tuple[tuple[str, ...], ...]:
+    job = _release_native_install_job(source)
+    include = job.split("        include:\n", 1)[1].split("    steps:\n", 1)[0]
+    rows: list[dict[str, str]] = []
+    for line in include.splitlines():
+        if line.startswith("          - "):
+            rows.append({})
+            field = line.removeprefix("          - ")
+        elif line.startswith("            "):
+            assert rows
+            field = line.removeprefix("            ")
+        elif not line.strip():
+            continue
+        else:
+            raise AssertionError(f"unexpected release install matrix line: {line!r}")
+        key, separator, value = field.partition(": ")
+        assert separator and key not in rows[-1]
+        rows[-1][key] = value
+
+    keys = ("runner", "platform", "smoke-python", "smoke-csaf", "verifier-python")
+    assert all(tuple(row) == keys for row in rows)
+    return tuple(tuple(row[key] for key in keys) for row in rows)
+
+
+def _release_native_install_step_command(source: str, name: str) -> str:
+    job = _release_native_install_job(source)
+    marker = f"      - name: {name}\n"
+    assert job.count(marker) == 1
+    step = job.split(marker, 1)[1].split("\n      - ", 1)[0]
+    run_line = re.search(r"(?m)^        run: (?P<value>.*)$", step)
+    assert run_line
+    value = run_line.group("value")
+    if value not in {"|-", ">-"}:
+        return value
+    block = step[run_line.end() :]
+    return " ".join(line.strip() for line in block.splitlines() if line.strip())
+
+
+def _assert_release_native_install_workflow(source: str) -> None:
+    assert _release_native_install_matrix(source) == (
+        (
+            "ubuntu-latest",
+            "linux-x64",
+            "../.native-smoke/bin/python",
+            ".native-smoke/bin/csaf",
+            ".native-smoke/bin/python",
+        ),
+        (
+            "macos-latest",
+            "macos-arm64",
+            "../.native-smoke/bin/python",
+            ".native-smoke/bin/csaf",
+            ".native-smoke/bin/python",
+        ),
+        (
+            "windows-latest",
+            "windows-x64",
+            "../.native-smoke/Scripts/python.exe",
+            ".native-smoke/Scripts/csaf.exe",
+            ".native-smoke/Scripts/python.exe",
+        ),
+    )
+    assert _release_native_install_step_command(
+        source, "Install the private console from the release bundle only"
+    ) == (
+        "${{ matrix.smoke-python }} -m pip install --no-index --no-deps "
+        "--require-hashes --find-links wheelhouse -r requirements.lock"
+    )
+    assert _release_native_install_step_command(
+        source, "Pre-stage verifier TLS dependency before network isolation"
+    ) == (
+        "${{ matrix.verifier-python }} -m pip install --require-hashes "
+        "-r requirements/release-tools.txt"
+    )
+    assert _release_native_install_step_command(
+        source, "Require READY activated launcher with supplemental application egress guard"
+    ) == (
+        "${{ matrix.verifier-python }} scripts/verify_native_install.py "
+        "--release-dir release "
+        "--dependencies installer/dependencies.json "
+        "--platform ${{ matrix.platform }} "
+        "--uv .native-assets/uv-archive "
+        "--officecli .native-assets/officecli "
+        "--csaf ${{ matrix.smoke-csaf }}"
+    )
+
+
+def test_release_native_install_matrix_and_commands_are_exact() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+
+    _assert_release_native_install_workflow(source)
+
+
+def test_release_native_install_contract_rejects_one_bad_matrix_row() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+    mutated = source.replace(
+        "- runner: windows-latest\n"
+        "            platform: windows-x64\n"
+        "            smoke-python: ../.native-smoke/Scripts/python.exe",
+        "- runner: windows-latest\n"
+        "            platform: windows-x64\n"
+        "            smoke-python: ../.native-smoke/Scripts/broken.exe",
+    )
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_release_native_install_workflow(mutated)
+
+
 def test_release_workflow_is_tag_gated_matrixed_and_scanned_before_upload() -> None:
     source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
 
