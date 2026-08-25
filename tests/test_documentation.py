@@ -176,6 +176,9 @@ def test_readme_installers_are_tagged_and_consent_first() -> None:
     assert len(installer_urls) == 3
     assert all("/releases/download/v0.1.0/" in url for url in installer_urls)
     assert all("/main/" not in url and "/latest/" not in url for url in installer_urls)
+    assert "tagged testing prerelease `v0.1.0`" in readme
+    assert "tagged stable `v0.1.0`" not in readme
+    assert "Direct installation remains available while testing" in readme
     assert "stable pinned OfficeCLI 1.0.143" in readme
     assert "explicit consent" in readme
     assert "No API key" in readme

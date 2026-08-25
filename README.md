@@ -8,7 +8,7 @@ CSAF turns local customer context into grounded account briefs, meeting follow-u
 
 ## Install
 
-The commands below download the installer from the tagged stable `v0.1.0` release. Read the script before running it. The installer detects Codex, Claude Code, and Gemini CLI and installs one target for each detected supported assistant type for the current user/configured environment. It makes no change until it shows the plan and you consent.
+The commands below download the installer from the tagged testing prerelease `v0.1.0`. Direct installation remains available while testing. Read the script before running it. The installer detects Codex, Claude Code, and Gemini CLI and installs one target for each detected supported assistant type for the current user/configured environment. It makes no change until it shows the plan and you consent.
 
 ### Windows
 
