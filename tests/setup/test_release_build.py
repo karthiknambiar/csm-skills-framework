@@ -424,6 +424,33 @@ def test_ci_runs_cross_platform_offline_native_smoke() -> None:
     assert "check_secrets.py" in source and "--package" in source
 
 
+def test_ci_invokes_pytest_as_a_python_module() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text("utf-8")
+
+    assert "- run: python -m pytest" in source
+    assert "- run: pytest" not in source
+
+
+def test_ci_runs_native_verifier_with_the_smoke_interpreter() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text("utf-8")
+
+    assert "verifier-python: .native-smoke/bin/python" in source
+    assert "verifier-python: .native-smoke/Scripts/python.exe" in source
+    assert (
+        "${{ matrix.verifier-python }} -m pip install --require-hashes "
+        "-r requirements/release-tools.txt"
+    ) in source
+    assert "${{ matrix.verifier-python }} scripts/verify_native_install.py" in source
+    assert "python scripts/verify_native_install.py" not in source
+
+
+def test_ci_pairs_macos_latest_with_the_arm64_bundle() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text("utf-8")
+
+    assert "- runner: macos-latest\n            platform: macos-arm64" in source
+    assert "platform: macos-x64" not in source
+
+
 def test_release_workflow_is_tag_gated_matrixed_and_scanned_before_upload() -> None:
     source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
 
@@ -881,7 +908,10 @@ def test_ci_runs_full_trusted_https_ready_verifier() -> None:
     verifier = (root / "scripts/verify_native_install.py").read_text("utf-8")
 
     assert "scripts/verify_native_install.py" in source
-    assert "python -m pip install --require-hashes -r requirements/release-tools.txt" in source
+    assert (
+        "${{ matrix.verifier-python }} -m pip install --require-hashes "
+        "-r requirements/release-tools.txt"
+    ) in source
     assert "uv-archive" in source
     assert "SSL_CERT_FILE" in verifier
     assert "HTTPS_PROXY" in verifier

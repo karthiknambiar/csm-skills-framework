@@ -25,7 +25,7 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - run: ruff check .
       - run: python scripts/check_secrets.py --worktree --tracked --history
-      - run: pytest
+      - run: python -m pytest
       - run: csaf evaluate evaluations/golden --report evaluation-report.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -44,16 +44,19 @@ jobs:
             platform: linux-x64
             smoke-python: ../.native-smoke/bin/python
             smoke_csaf: ../.native-smoke/bin/csaf
+            verifier-python: .native-smoke/bin/python
             verifier-csaf: .native-smoke/bin/csaf
           - runner: macos-latest
-            platform: macos-x64
+            platform: macos-arm64
             smoke-python: ../.native-smoke/bin/python
             smoke_csaf: ../.native-smoke/bin/csaf
+            verifier-python: .native-smoke/bin/python
             verifier-csaf: .native-smoke/bin/csaf
           - runner: windows-latest
             platform: windows-x64
             smoke-python: ../.native-smoke/Scripts/python.exe
             smoke_csaf: ../.native-smoke/Scripts/csaf.exe
+            verifier-python: .native-smoke/Scripts/python.exe
             verifier-csaf: .native-smoke/Scripts/csaf.exe
     env:
       CSAF_INSTALLER_NETWORK_FORBIDDEN: "1"
@@ -135,10 +138,10 @@ jobs:
                   raise RuntimeError(f"{dependency} did not match its pinned identity")
               os.replace(temporary, target)
       - name: Install trusted TLS verifier dependency
-        run: python -m pip install --require-hashes -r requirements/release-tools.txt
+        run: ${{ matrix.verifier-python }} -m pip install --require-hashes -r requirements/release-tools.txt
       - name: Run consented install and require READY doctor with external network blocked
         run: >-
-          python scripts/verify_native_install.py
+          ${{ matrix.verifier-python }} scripts/verify_native_install.py
           --release-dir dist/native-ci/0.1.0
           --dependencies installer/dependencies.json
           --platform ${{ matrix.platform }}
