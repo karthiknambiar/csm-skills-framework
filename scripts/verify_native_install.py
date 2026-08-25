@@ -422,20 +422,90 @@ def _prepare_console_bootstrap(
         raise NativeVerificationError("installed console bootstrap verification failed") from exc
 
     def copy_regular(source: Path, destination: Path, mode: int) -> Path:
+        source_fd: int | None = None
+        destination_fd: int | None = None
+        failure: OSError | None = None
         try:
-            with source.open("rb") as incoming, destination.open("xb") as outgoing:
-                shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
-            destination.chmod(mode)
+            source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            source_flags |= getattr(os, "O_NOFOLLOW", 0)
+            source_fd = os.open(source, source_flags)
+            source_before = os.fstat(source_fd)
+            if not stat.S_ISREG(source_before.st_mode):
+                raise OSError("bootstrap source is not regular")
+
+            destination_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            destination_flags |= getattr(os, "O_CLOEXEC", 0)
+            destination_flags |= getattr(os, "O_NOFOLLOW", 0)
+            destination_fd = os.open(destination, destination_flags, mode)
+            os.fchmod(destination_fd, mode)
+
+            source_digest = hashlib.sha256()
+            copied = 0
+            while chunk := os.read(source_fd, 1024 * 1024):
+                source_digest.update(chunk)
+                copied += len(chunk)
+                remaining = memoryview(chunk)
+                while remaining:
+                    written = os.write(destination_fd, remaining)
+                    if written <= 0:
+                        raise OSError("bootstrap destination write failed")
+                    remaining = remaining[written:]
+
+            source_after = os.fstat(source_fd)
+            source_identity = (
+                source_before.st_dev,
+                source_before.st_ino,
+                source_before.st_size,
+                source_before.st_mtime_ns,
+                source_before.st_ctime_ns,
+            )
+            if (
+                source_identity
+                != (
+                    source_after.st_dev,
+                    source_after.st_ino,
+                    source_after.st_size,
+                    source_after.st_mtime_ns,
+                    source_after.st_ctime_ns,
+                )
+                or copied != source_before.st_size
+            ):
+                raise OSError("bootstrap source changed while copying")
+
+            destination_details = os.fstat(destination_fd)
+            if (
+                not stat.S_ISREG(destination_details.st_mode)
+                or stat.S_IMODE(destination_details.st_mode) != mode
+                or destination_details.st_size != copied
+            ):
+                raise OSError("bootstrap destination verification failed")
+            os.lseek(destination_fd, 0, os.SEEK_SET)
+            destination_digest = hashlib.sha256()
+            while chunk := os.read(destination_fd, 1024 * 1024):
+                destination_digest.update(chunk)
+            if destination_digest.digest() != source_digest.digest():
+                raise OSError("bootstrap destination verification failed")
         except OSError as exc:
+            failure = exc
+        finally:
+            for file_descriptor in (destination_fd, source_fd):
+                if file_descriptor is None:
+                    continue
+                try:
+                    os.close(file_descriptor)
+                except OSError as exc:
+                    if failure is None:
+                        failure = exc
+
+        if failure is not None:
+            if destination_fd is not None:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise NativeVerificationError(
                 "installed console bootstrap verification failed"
-            ) from exc
-        if (
-            not _regular(destination)
-            or destination.stat().st_size != source.stat().st_size
-            or _hash(destination) != _hash(source)
-        ):
-            raise NativeVerificationError("installed console bootstrap verification failed")
+            ) from failure
         return destination
 
     copy_regular(configuration, root / "pyvenv.cfg", 0o600)

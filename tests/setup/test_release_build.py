@@ -1210,7 +1210,97 @@ def test_console_bootstrap_replaces_posix_venv_symlinks_with_regular_files(
     assert native_verifier._regular(tmp_path / "bootstrap/pyvenv.cfg")
     assert stat.S_IMODE((tmp_path / "bootstrap").stat().st_mode) == 0o700
     assert stat.S_IMODE(bootstrap_python.stat().st_mode) == 0o700
+    assert stat.S_IMODE(bootstrap_console.stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "bootstrap/pyvenv.cfg").stat().st_mode) == 0o600
     assert bootstrap_python.read_bytes() == Path(sys.executable).resolve(strict=True).read_bytes()
+    assert bootstrap_console.read_bytes() == b"console"
+    assert (tmp_path / "bootstrap/pyvenv.cfg").read_bytes() == (
+        f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n".encode()
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW protects bootstrap sources")
+def test_console_bootstrap_refuses_source_replaced_by_symlink_before_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = tmp_path / "smoke"
+    scripts = smoke / "bin"
+    scripts.mkdir(parents=True)
+    source_python = scripts / "python"
+    source_python.symlink_to(Path(sys.executable).resolve(strict=True))
+    source_console = scripts / "csaf"
+    source_console.write_bytes(b"trusted-console")
+    source_console.chmod(0o700)
+    (smoke / "pyvenv.cfg").write_text(
+        f"home = {Path(sys._base_executable).resolve(strict=True).parent}\n",
+        encoding="utf-8",
+    )
+    attacker = tmp_path / "attacker"
+    attacker.write_bytes(b"attacker-controlled")
+    original_open = os.open
+    swapped = False
+
+    def swap_before_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if not swapped and Path(path) == source_console:
+            source_console.rename(source_console.with_suffix(".trusted"))
+            source_console.symlink_to(attacker)
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_before_open)
+
+    with pytest.raises(
+        NativeVerificationError,
+        match="^installed console bootstrap verification failed$",
+    ):
+        native_verifier._prepare_console_bootstrap(
+            tmp_path / "bootstrap", source_console, source_python
+        )
+
+    assert swapped
+    assert not (tmp_path / "bootstrap/bin/csaf").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX bootstrap uses raw descriptors")
+def test_console_bootstrap_sanitizes_descriptor_close_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = tmp_path / "smoke"
+    scripts = smoke / "bin"
+    scripts.mkdir(parents=True)
+    source_python = scripts / "python"
+    source_python.symlink_to(Path(sys.executable).resolve(strict=True))
+    source_console = scripts / "csaf"
+    source_console.write_bytes(b"console")
+    (smoke / "pyvenv.cfg").write_text("home = /trusted\n", encoding="utf-8")
+    original_close = os.close
+    failed = False
+
+    def fail_once_after_close(file_descriptor: int) -> None:
+        nonlocal failed
+        original_close(file_descriptor)
+        if not failed:
+            failed = True
+            raise OSError("sensitive descriptor detail")
+
+    monkeypatch.setattr(os, "close", fail_once_after_close)
+
+    with pytest.raises(
+        NativeVerificationError,
+        match="^installed console bootstrap verification failed$",
+    ):
+        native_verifier._prepare_console_bootstrap(
+            tmp_path / "bootstrap", source_console, source_python
+        )
+
+    assert failed
 
 
 def test_verifier_workspace_is_created_beside_validated_release(
