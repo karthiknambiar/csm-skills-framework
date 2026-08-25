@@ -921,6 +921,8 @@ def test_native_verifier_prepares_private_posix_data_root(tmp_path: Path) -> Non
 
 def test_egress_sitecustomize_refuses_direct_external_socket(tmp_path: Path) -> None:
     guard = native_verifier._write_egress_guard(tmp_path / "guard")
+    if os.name == "posix":
+        assert stat.S_IMODE(guard.parent.stat().st_mode) == 0o700
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(guard.parent)
     result = subprocess.run(
@@ -986,6 +988,8 @@ def test_activated_doctor_runs_through_runtime_launcher(
     data = tmp_path / "data"
     runtime = data / "versions/0.1.0"
     runtime.mkdir(parents=True)
+    site_packages = runtime / "site-packages"
+    site_packages.mkdir()
     launcher = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
     launcher.write_bytes(b"launcher")
     if os.name != "nt":
@@ -993,15 +997,22 @@ def test_activated_doctor_runs_through_runtime_launcher(
     _activated_state(data, runtime, "0.1.0")
     proof = tmp_path / "proof"
     proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
+    guard = native_verifier._write_egress_guard(tmp_path / "guard")
+    inherited = tmp_path / "mutable-checkout"
     commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
 
     def fake_run(
         command: list[str], *, env: dict[str, str], timeout: int
     ) -> subprocess.CompletedProcess[str]:
-        del env, timeout
+        del timeout
         commands.append(command)
+        environments.append(env)
         proof.write_text("CSAF_EGRESS_GUARD_ACTIVE\n", encoding="utf-8")
-        output = '{"status":"ready"}' if "doctor" in command else "0.1.0"
+        if command[0] == sys.executable:
+            output = "CSAF_RUNTIME_IMPORT_OK"
+        else:
+            output = '{"status":"ready"}' if "doctor" in command else "0.1.0"
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(native_verifier, "_run", fake_run)
@@ -1009,12 +1020,60 @@ def test_activated_doctor_runs_through_runtime_launcher(
         data=data,
         version="0.1.0",
         platform="windows-x64" if os.name == "nt" else "linux-x64",
-        env={},
+        env={
+            "CSAF_EGRESS_GUARD_PROOF": str(proof),
+            "PYTHONPATH": str(guard.parent) + os.pathsep + str(inherited),
+        },
         proof=proof,
     )
     assert report == {"status": "ready"}
+    assert commands[0][0] == sys.executable
     assert commands[-1] == [str(launcher), "--database", ":memory:", "setup", "doctor", "--json"]
-    assert all(command[0] == str(launcher) for command in commands)
+    assert all(command[0] == str(launcher) for command in commands[1:])
+    expected_pythonpath = str(site_packages) + os.pathsep + str(guard.parent)
+    assert all(environment["PYTHONPATH"] == expected_pythonpath for environment in environments)
+    assert all(environment["PYTHONNOUSERSITE"] == "1" for environment in environments)
+    assert all(str(inherited) not in environment["PYTHONPATH"] for environment in environments)
+
+
+def test_activated_environment_imports_csaf_only_from_versioned_site_packages(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "data/versions/0.1.0"
+    site_packages = runtime / "site-packages"
+    package = site_packages / "csaf"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("RUNTIME_COPY = True\n", encoding="utf-8")
+    launcher = runtime / ("csaf.exe" if os.name == "nt" else "csaf")
+    launcher.write_bytes(b"launcher")
+    if os.name != "nt":
+        launcher.chmod(0o700)
+    guard = native_verifier._write_egress_guard(tmp_path / "guard")
+    shadow = tmp_path / "shadow"
+    (shadow / "csaf").mkdir(parents=True)
+    (shadow / "csaf/__init__.py").write_text("RUNTIME_COPY = False\n", encoding="utf-8")
+
+    environment = native_verifier._activated_environment(
+        launcher,
+        {
+            "PYTHONPATH": str(guard.parent) + os.pathsep + str(shadow),
+            "CSAF_EGRESS_GUARD_PROOF": str(tmp_path / "proof"),
+        },
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "import csaf; print(csaf.__file__)"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    origin = Path(result.stdout.strip()).resolve(strict=True)
+    origin.relative_to(site_packages.resolve(strict=True))
+    assert str(shadow) not in environment["PYTHONPATH"]
+    assert (tmp_path / "proof").read_text(encoding="utf-8") == "CSAF_EGRESS_GUARD_ACTIVE\n"
 
 
 def test_uv_extraction_accepts_only_the_pinned_archive_layout(tmp_path: Path) -> None:

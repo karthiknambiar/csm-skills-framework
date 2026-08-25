@@ -237,7 +237,8 @@ class _AssetHandler(http.server.BaseHTTPRequestHandler):
 def _write_egress_guard(directory: Path) -> Path:
     """Create a startup policy that permits only loopback network connections."""
     directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=False)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    directory.chmod(0o700)
     policy = directory / "sitecustomize.py"
     policy.write_text(
         """import errno
@@ -299,6 +300,43 @@ if _proof:
     )
     policy.chmod(0o600)
     return policy
+
+
+def _activated_environment(launcher: Path, env: dict[str, str]) -> dict[str, str]:
+    """Isolate activated commands to the installed runtime and verifier guard."""
+    runtime = launcher.parent
+    site_packages = runtime / "site-packages"
+    try:
+        details = site_packages.lstat()
+        site_packages.resolve(strict=True).relative_to(runtime.resolve(strict=True))
+    except (OSError, ValueError) as exc:
+        raise NativeVerificationError("activated runtime import path verification failed") from exc
+    if _link_or_reparse(details) or not stat.S_ISDIR(details.st_mode):
+        raise NativeVerificationError("activated runtime import path verification failed")
+
+    inherited = env.get("PYTHONPATH", "")
+    guard_text = inherited.split(os.pathsep, 1)[0]
+    if not guard_text:
+        raise NativeVerificationError("activated egress guard verification failed")
+    guard = _safe_existing_path(Path(guard_text), "activated egress guard verification failed")
+    policy = guard / "sitecustomize.py"
+    try:
+        guard_details = guard.lstat()
+        children = {child.name for child in guard.iterdir()}
+    except OSError as exc:
+        raise NativeVerificationError("activated egress guard verification failed") from exc
+    if (
+        not stat.S_ISDIR(guard_details.st_mode)
+        or children != {"sitecustomize.py"}
+        or not _regular(policy)
+        or (os.name == "posix" and stat.S_IMODE(guard_details.st_mode) != 0o700)
+    ):
+        raise NativeVerificationError("activated egress guard verification failed")
+
+    activated = env.copy()
+    activated["PYTHONPATH"] = str(site_packages) + os.pathsep + str(guard)
+    activated["PYTHONNOUSERSITE"] = "1"
+    return activated
 
 
 def _prepare_data_root(data: Path) -> Path:
@@ -373,13 +411,29 @@ def _verify_activated_runtime(
     *, data: Path, version: str, platform: str, env: dict[str, str], proof: Path
 ) -> dict[str, Any]:
     launcher = _activated_launcher(data, version, platform)
+    activated_env = _activated_environment(launcher, env)
     try:
         proof.unlink(missing_ok=False)
     except OSError as exc:
         raise NativeVerificationError(
             "activated launcher egress proof verification failed"
         ) from exc
-    help_result = _run([str(launcher), "--help"], env=env, timeout=30)
+    import_probe = _run(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib,sys,csaf; "
+            "pathlib.Path(csaf.__file__).resolve(strict=True).relative_to("
+            "pathlib.Path(sys.argv[1]).resolve(strict=True)); "
+            "print('CSAF_RUNTIME_IMPORT_OK')",
+            str(launcher.parent / "site-packages"),
+        ],
+        env=activated_env,
+        timeout=30,
+    )
+    if import_probe.returncode != 0 or import_probe.stdout.strip() != "CSAF_RUNTIME_IMPORT_OK":
+        raise NativeVerificationError("activated runtime import verification failed")
+    help_result = _run([str(launcher), "--help"], env=activated_env, timeout=30)
     if help_result.returncode != 0:
         raise NativeVerificationError("activated launcher help smoke failed")
     try:
@@ -389,7 +443,7 @@ def _verify_activated_runtime(
         raise NativeVerificationError("activated launcher did not load egress policy") from exc
     doctor = _run(
         [str(launcher), "--database", ":memory:", "setup", "doctor", "--json"],
-        env=env,
+        env=activated_env,
         timeout=180,
     )
     try:
