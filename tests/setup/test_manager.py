@@ -27,6 +27,7 @@ from csaf.setup import (
 from csaf.setup.manager import (
     ClaudeManagedAdapter,
     CodexManagedAdapter,
+    GeminiManagedAdapter,
     SetupManager,
     SetupStatus,
 )
@@ -967,6 +968,57 @@ def test_actual_codex_installer_lifecycle_consumes_verified_archive(tmp_path: Pa
     receipt = json.loads((managed.destination / ".csaf-adapter.json").read_text(encoding="utf-8"))
     assert receipt["asset_sha256"] == hashlib.sha256(codex_bytes).hexdigest()
     assert manager.doctor() is True
+    (managed.destination / "SKILL.md").write_text("damaged", encoding="utf-8")
+    assert manager.repair(plan, consent=lambda _: True).status is SetupStatus.READY
+    assert (managed.destination / "SKILL.md").read_text(encoding="utf-8") == "# CSAF native"
+    assert manager.uninstall(consent=lambda: True).status is SetupStatus.READY
+    assert not managed.destination.exists()
+
+
+def test_actual_gemini_installer_lifecycle_records_repairs_and_uninstalls(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "canonical-skill.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("SKILL.md", "# CSAF native")
+        bundle.writestr("scripts/launch", "#!/bin/sh\n")
+    skill_bytes = archive.read_bytes()
+    payload = _manifest().model_dump(mode="json")
+    payload["codex_skill"] = _asset(skill_bytes, "canonical-skill.zip")
+    manifest = ReleaseManifest.model_validate(payload)
+    harness = Harness(tmp_path)
+    original_download = harness.download
+
+    def download(asset: object, destination: Path) -> Path:
+        if "canonical-skill.zip" in str(getattr(asset, "url", "")):
+            harness.effects.append(("download", asset))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(skill_bytes)
+            return destination
+        return original_download(asset, destination)
+
+    managed = GeminiManagedAdapter(tmp_path / ".gemini" / "skills")
+    manager = SetupManager(
+        data_root=tmp_path / "data",
+        platform=PLATFORM,
+        detected_assistants=(AssistantKind.GEMINI,),
+        downloader=download,
+        runtime_installer=harness.install_runtime,
+        adapter_installers={AssistantKind.GEMINI: managed},
+        doctor_runner=harness.doctor,
+        runtime_probe=harness.runtime_probe,
+        officecli_probe=harness.officecli_probe,
+    )
+    plan = manager.plan_install(manifest, requested_targets=None)
+
+    assert plan.targets == (AssistantKind.GEMINI,)
+    assert plan.adapter_assets[AssistantKind.GEMINI] == manifest.codex_skill
+    assert plan.adapter_destinations[AssistantKind.GEMINI] == managed.destination
+    assert manager.install(plan, consent=lambda _: True).status is SetupStatus.READY
+    state = json.loads((tmp_path / "data" / "state.json").read_text(encoding="utf-8"))
+    assert state["adapter_targets"] == {"gemini": str(managed.destination)}
+    assert manager.doctor() is True
+
     (managed.destination / "SKILL.md").write_text("damaged", encoding="utf-8")
     assert manager.repair(plan, consent=lambda _: True).status is SetupStatus.READY
     assert (managed.destination / "SKILL.md").read_text(encoding="utf-8") == "# CSAF native"
