@@ -28,6 +28,7 @@ from csaf.setup.types import InstallState
 PLATFORMS = ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "windows-x64")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_DIAGNOSTICS = frozenset({"setup-install"})
+_FileIdentity = tuple[int, int]
 
 
 class NativeVerificationError(RuntimeError):
@@ -74,6 +75,19 @@ def _safe_existing_path(path: Path, message: str) -> Path:
         return supplied.resolve(strict=True)
     except OSError as exc:
         raise NativeVerificationError(message) from exc
+
+
+def _safe_regular_identity(path: Path, message: str) -> tuple[Path, _FileIdentity]:
+    """Validate one no-link regular path and retain its original identity."""
+    supplied = Path(os.path.abspath(os.fspath(path)))
+    try:
+        details = supplied.lstat()
+    except OSError as exc:
+        raise NativeVerificationError(message) from exc
+    if not stat.S_ISREG(details.st_mode) or _link_or_reparse(details):
+        raise NativeVerificationError(message)
+    resolved = _safe_existing_path(supplied, message)
+    return resolved, (details.st_dev, details.st_ino)
 
 
 def _verified_asset(path: Path, *, sha256: str, size: int, root: Path | None = None) -> Path:
@@ -384,9 +398,8 @@ def _prepare_console_bootstrap(
     root: Path, console: Path, python_executable: Path
 ) -> tuple[Path, Path]:
     """Mirror a POSIX venv with regular bootstrap executables."""
-    console = _safe_existing_path(console, "installed console bootstrap verification failed")
-    if not _regular(console):
-        raise NativeVerificationError("installed console bootstrap verification failed")
+    message = "installed console bootstrap verification failed"
+    console, console_identity = _safe_regular_identity(console, message)
 
     supplied_python = Path(os.path.abspath(os.fspath(python_executable)))
     _safe_existing_path(supplied_python.parent, "installed console bootstrap verification failed")
@@ -394,20 +407,14 @@ def _prepare_console_bootstrap(
         resolved_python = supplied_python.resolve(strict=True)
     except OSError as exc:
         raise NativeVerificationError("installed console bootstrap verification failed") from exc
-    resolved_python = _safe_existing_path(
-        resolved_python, "installed console bootstrap verification failed"
-    )
-    if not _regular(resolved_python):
-        raise NativeVerificationError("installed console bootstrap verification failed")
+    resolved_python, python_identity = _safe_regular_identity(resolved_python, message)
 
     venv_root = _safe_existing_path(
         supplied_python.parent.parent, "installed console bootstrap verification failed"
     )
-    configuration = _safe_existing_path(
-        venv_root / "pyvenv.cfg", "installed console bootstrap verification failed"
+    configuration, configuration_identity = _safe_regular_identity(
+        venv_root / "pyvenv.cfg", message
     )
-    if not _regular(configuration):
-        raise NativeVerificationError("installed console bootstrap verification failed")
 
     root = Path(root)
     parent = _safe_existing_path(root.parent, "installed console bootstrap verification failed")
@@ -421,7 +428,9 @@ def _prepare_console_bootstrap(
     except OSError as exc:
         raise NativeVerificationError("installed console bootstrap verification failed") from exc
 
-    def copy_regular(source: Path, destination: Path, mode: int) -> Path:
+    def copy_regular(
+        source: Path, destination: Path, mode: int, expected_identity: _FileIdentity
+    ) -> Path:
         source_fd: int | None = None
         destination_fd: int | None = None
         failure: OSError | None = None
@@ -430,7 +439,14 @@ def _prepare_console_bootstrap(
             source_flags |= getattr(os, "O_NOFOLLOW", 0)
             source_fd = os.open(source, source_flags)
             source_before = os.fstat(source_fd)
-            if not stat.S_ISREG(source_before.st_mode):
+            if (
+                not stat.S_ISREG(source_before.st_mode)
+                or (
+                    source_before.st_dev,
+                    source_before.st_ino,
+                )
+                != expected_identity
+            ):
                 raise OSError("bootstrap source is not regular")
 
             destination_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
@@ -508,9 +524,9 @@ def _prepare_console_bootstrap(
             ) from failure
         return destination
 
-    copy_regular(configuration, root / "pyvenv.cfg", 0o600)
-    bootstrap_python = copy_regular(resolved_python, scripts / "python", 0o700)
-    bootstrap_console = copy_regular(console, scripts / "csaf", 0o700)
+    copy_regular(configuration, root / "pyvenv.cfg", 0o600, configuration_identity)
+    bootstrap_python = copy_regular(resolved_python, scripts / "python", 0o700, python_identity)
+    bootstrap_console = copy_regular(console, scripts / "csaf", 0o700, console_identity)
     return bootstrap_python, bootstrap_console
 
 
