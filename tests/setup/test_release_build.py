@@ -717,6 +717,7 @@ def _assert_prerelease_publication(source: str) -> None:
         "          files: release/*\n"
         "          fail_on_unmatched_files: true\n"
     )
+    assert publish_job.count("uses: softprops/action-gh-release@") == 1
     assert publication in publish_job
 
 
@@ -774,6 +775,23 @@ def test_prerelease_publication_rejects_top_level_block_scalar_decoy() -> None:
     action = source[action_start:action_end]
     without_publish_action = source[:action_start] + source[action_end:]
     mutated = "env:\n  PRERELEASE_DECOY: |\n" + action + without_publish_action
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_prerelease_publication(mutated)
+
+
+def test_prerelease_publication_rejects_second_release_action() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/release.yml").read_text("utf-8")
+    unsafe_release = (
+        "      - uses: softprops/action-gh-release@"
+        "6da8fa9354ddfdc4aeace5fc48d7f679b5214090\n"
+        "        with:\n"
+        "          prerelease: false\n"
+        "          files: release/*\n"
+    )
+    final_safe_setting = "          fail_on_unmatched_files: true\n"
+    mutated = source.replace(final_safe_setting, final_safe_setting + unsafe_release, 1)
     assert mutated != source
 
     with pytest.raises(AssertionError):
