@@ -431,17 +431,133 @@ def test_ci_invokes_pytest_as_a_python_module() -> None:
     assert "- run: pytest" not in source
 
 
+def _native_smoke_job(source: str) -> str:
+    marker = "  native-offline-smoke:\n"
+    assert source.count(marker) == 1
+    job = source.split(marker, 1)[1]
+    following_job = re.search(r"(?m)^  [a-zA-Z0-9_-]+:\s*$", job)
+    return job[: following_job.start()] if following_job else job
+
+
+def _native_smoke_matrix(source: str) -> tuple[tuple[str, ...], ...]:
+    job = _native_smoke_job(source)
+    include = job.split("        include:\n", 1)[1].split("    env:\n", 1)[0]
+    rows: list[dict[str, str]] = []
+    for line in include.splitlines():
+        if line.startswith("          - "):
+            rows.append({})
+            field = line.removeprefix("          - ")
+        elif line.startswith("            "):
+            assert rows
+            field = line.removeprefix("            ")
+        elif not line.strip():
+            continue
+        else:
+            raise AssertionError(f"unexpected native-smoke matrix line: {line!r}")
+        key, separator, value = field.partition(": ")
+        assert separator and key not in rows[-1]
+        rows[-1][key] = value
+
+    keys = (
+        "runner",
+        "platform",
+        "smoke-python",
+        "smoke_csaf",
+        "verifier-python",
+        "verifier-csaf",
+    )
+    assert all(tuple(row) == keys for row in rows)
+    return tuple(tuple(row[key] for key in keys) for row in rows)
+
+
+def _native_smoke_step_command(source: str, name: str) -> str:
+    job = _native_smoke_job(source)
+    marker = f"      - name: {name}\n"
+    assert job.count(marker) == 1
+    step = job.split(marker, 1)[1].split("\n      - ", 1)[0]
+    run_line = re.search(r"(?m)^        run: (?P<value>.*)$", step)
+    assert run_line
+    value = run_line.group("value")
+    if value not in {"|-", ">-"}:
+        return value
+    block = step[run_line.end() :]
+    return " ".join(line.strip() for line in block.splitlines() if line.strip())
+
+
+def _assert_native_smoke_workflow(source: str) -> None:
+    assert _native_smoke_matrix(source) == (
+        (
+            "ubuntu-latest",
+            "linux-x64",
+            "../.native-smoke/bin/python",
+            "../.native-smoke/bin/csaf",
+            ".native-smoke/bin/python",
+            ".native-smoke/bin/csaf",
+        ),
+        (
+            "macos-latest",
+            "macos-arm64",
+            "../.native-smoke/bin/python",
+            "../.native-smoke/bin/csaf",
+            ".native-smoke/bin/python",
+            ".native-smoke/bin/csaf",
+        ),
+        (
+            "windows-latest",
+            "windows-x64",
+            "../.native-smoke/Scripts/python.exe",
+            "../.native-smoke/Scripts/csaf.exe",
+            ".native-smoke/Scripts/python.exe",
+            ".native-smoke/Scripts/csaf.exe",
+        ),
+    )
+    assert _native_smoke_step_command(
+        source, "Install from the bundle with no index (--offline)"
+    ) == (
+        "${{ matrix.smoke-python }} -m pip install --no-index --no-deps "
+        "--require-hashes --find-links wheelhouse -r requirements.lock"
+    )
+    assert _native_smoke_step_command(source, "Install trusted TLS verifier dependency") == (
+        "${{ matrix.verifier-python }} -m pip install --require-hashes "
+        "-r requirements/release-tools.txt"
+    )
+    assert _native_smoke_step_command(
+        source, "Run consented install and require READY doctor with external network blocked"
+    ) == (
+        "${{ matrix.verifier-python }} scripts/verify_native_install.py "
+        "--release-dir dist/native-ci/0.1.0 "
+        "--dependencies installer/dependencies.json "
+        "--platform ${{ matrix.platform }} "
+        "--uv .native-assets/uv-archive "
+        "--officecli .native-assets/officecli "
+        "--csaf ${{ matrix.verifier-csaf }}"
+    )
+
+
 def test_ci_runs_native_verifier_with_the_smoke_interpreter() -> None:
     source = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text("utf-8")
 
-    assert "verifier-python: .native-smoke/bin/python" in source
-    assert "verifier-python: .native-smoke/Scripts/python.exe" in source
-    assert (
-        "${{ matrix.verifier-python }} -m pip install --require-hashes "
-        "-r requirements/release-tools.txt"
-    ) in source
-    assert "${{ matrix.verifier-python }} scripts/verify_native_install.py" in source
-    assert "python scripts/verify_native_install.py" not in source
+    _assert_native_smoke_workflow(source)
+
+
+def test_native_smoke_contract_rejects_one_bad_matrix_row() -> None:
+    source = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text("utf-8")
+    mutated = source.replace(
+        "- runner: macos-latest\n"
+        "            platform: macos-arm64\n"
+        "            smoke-python: ../.native-smoke/bin/python\n"
+        "            smoke_csaf: ../.native-smoke/bin/csaf\n"
+        "            verifier-python: .native-smoke/bin/python",
+        "- runner: macos-latest\n"
+        "            platform: macos-arm64\n"
+        "            smoke-python: ../.native-smoke/bin/python\n"
+        "            smoke_csaf: ../.native-smoke/bin/csaf\n"
+        "            verifier-python: .native-smoke/broken/python",
+    )
+    assert mutated != source
+
+    with pytest.raises(AssertionError):
+        _assert_native_smoke_workflow(mutated)
 
 
 def test_ci_pairs_macos_latest_with_the_arm64_bundle() -> None:
