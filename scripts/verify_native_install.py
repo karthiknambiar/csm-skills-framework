@@ -28,7 +28,7 @@ from csaf.setup.types import InstallState
 PLATFORMS = ("linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "windows-x64")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_DIAGNOSTICS = frozenset({"setup-install"})
-_FileIdentity = tuple[int, int]
+_FileIdentity = tuple[int, int, int, int, int]
 
 
 class NativeVerificationError(RuntimeError):
@@ -61,6 +61,16 @@ def _regular(path: Path) -> bool:
     return stat.S_ISREG(details.st_mode) and not _link_or_reparse(details)
 
 
+def _file_identity(details: os.stat_result) -> _FileIdentity:
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+    )
+
+
 def _safe_existing_path(path: Path, message: str) -> Path:
     """Reject links/reparse points in a supplied path before resolving it."""
     supplied = Path(os.path.abspath(os.fspath(path)))
@@ -87,7 +97,7 @@ def _safe_regular_identity(path: Path, message: str) -> tuple[Path, _FileIdentit
     if not stat.S_ISREG(details.st_mode) or _link_or_reparse(details):
         raise NativeVerificationError(message)
     resolved = _safe_existing_path(supplied, message)
-    return resolved, (details.st_dev, details.st_ino)
+    return resolved, _file_identity(details)
 
 
 def _verified_asset(path: Path, *, sha256: str, size: int, root: Path | None = None) -> Path:
@@ -441,11 +451,7 @@ def _prepare_console_bootstrap(
             source_before = os.fstat(source_fd)
             if (
                 not stat.S_ISREG(source_before.st_mode)
-                or (
-                    source_before.st_dev,
-                    source_before.st_ino,
-                )
-                != expected_identity
+                or _file_identity(source_before) != expected_identity
             ):
                 raise OSError("bootstrap source is not regular")
 
@@ -468,23 +474,8 @@ def _prepare_console_bootstrap(
                     remaining = remaining[written:]
 
             source_after = os.fstat(source_fd)
-            source_identity = (
-                source_before.st_dev,
-                source_before.st_ino,
-                source_before.st_size,
-                source_before.st_mtime_ns,
-                source_before.st_ctime_ns,
-            )
-            if (
-                source_identity
-                != (
-                    source_after.st_dev,
-                    source_after.st_ino,
-                    source_after.st_size,
-                    source_after.st_mtime_ns,
-                    source_after.st_ctime_ns,
-                )
-                or copied != source_before.st_size
+            if _file_identity(source_before) != _file_identity(source_after) or (
+                copied != source_before.st_size
             ):
                 raise OSError("bootstrap source changed while copying")
 
