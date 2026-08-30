@@ -1,13 +1,14 @@
 """Base abstractions used to author CSAF skills."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Generic, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel
 
+from csaf.core.clock import utc_now
 from csaf.memory import MemoryStore
 from csaf.schemas import MemoryRecord
 from csaf.skills.types import SkillMetadata, SkillResultDraft
@@ -21,10 +22,10 @@ class SkillContext:
     """Dependencies and retrieved customer context supplied by the runner."""
 
     execution_id: UUID
-    now: datetime
     customer_id: str
     memory: MemoryStore
     supporting_memory: tuple[MemoryRecord, ...]
+    now: datetime = field(default_factory=utc_now)
 
 
 class Skill(ABC, Generic[InputT, OutputT]):

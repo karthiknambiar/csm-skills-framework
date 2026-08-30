@@ -1,5 +1,11 @@
 """Shared framework primitives."""
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from csaf.core.runtime import Runtime as Runtime
+    from csaf.core.runtime import create_runtime as create_runtime
+
 __all__ = ["Runtime", "create_runtime"]
 
 
