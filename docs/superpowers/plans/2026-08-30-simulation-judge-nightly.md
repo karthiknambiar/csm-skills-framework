@@ -333,6 +333,3 @@ Expected: PASS with existing platform-dependent skips only.
 **Step 4: Commit verification fixes, if any**
 
 If verification changed a listed file, stage that exact file and commit it as `fix: harden simulation evaluation`; otherwise create no commit.
-
-
-

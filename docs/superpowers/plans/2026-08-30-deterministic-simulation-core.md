@@ -844,5 +844,3 @@ Expected: exit `0` with JSON, Markdown, and JUnit reports.
 
 If verification changes tracked files, commit only those targeted fixes with a
 conventional message and rerun the failed gate. Otherwise create no empty commit.
-
-
