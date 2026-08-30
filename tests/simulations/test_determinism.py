@@ -1,9 +1,29 @@
 """Deterministic runtime dependency tests."""
 
+import subprocess
+import sys
 from datetime import UTC, datetime
 from uuid import UUID
 
 from csaf.core import create_runtime
+
+
+def test_memory_store_imports_in_a_fresh_process() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from csaf.memory import SQLiteMemoryStore; "
+                "from csaf.core import Runtime, create_runtime"
+            ),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_runtime_uses_injected_time_and_ids() -> None:
