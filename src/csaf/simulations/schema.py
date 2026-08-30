@@ -14,7 +14,7 @@ class SeedMemoryStep(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str | None = None
+    id: NonEmptyString | None = None
     type: Literal["seed_memory"]
     records: tuple[MemoryRecordCreate, ...]
 
@@ -24,7 +24,7 @@ class RunSkillStep(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str | None = None
+    id: NonEmptyString | None = None
     type: Literal["run_skill"]
     skill: NonEmptyString
     input: dict[str, JsonValue]
@@ -36,7 +36,7 @@ class AdvanceTimeStep(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str | None = None
+    id: NonEmptyString | None = None
     type: Literal["advance_time"]
     seconds: int = Field(gt=0, le=31_536_000)
 
@@ -56,7 +56,7 @@ class SetFaultStep(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str | None = None
+    id: NonEmptyString | None = None
     type: Literal["set_fault"]
     fault: FaultName
     remaining_calls: int = Field(default=1, ge=1, le=100)
@@ -67,7 +67,7 @@ class ClearFaultsStep(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str | None = None
+    id: NonEmptyString | None = None
     type: Literal["clear_faults"]
 
 
@@ -76,7 +76,7 @@ class IngestFixtureStep(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str | None = None
+    id: NonEmptyString | None = None
     type: Literal["ingest_fixture"]
     customer_id: NonEmptyString
     fixture: NonEmptyString

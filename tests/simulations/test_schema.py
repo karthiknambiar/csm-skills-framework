@@ -105,6 +105,25 @@ def test_every_step_discriminator_parses_specific_model(
 
 
 @pytest.mark.parametrize(
+    "step",
+    [
+        {"id": "", "type": "seed_memory", "records": []},
+        {"id": "", "type": "run_skill", "skill": "qbr", "input": {}},
+        {"id": "", "type": "advance_time", "seconds": 1},
+        {"id": "", "type": "set_fault", "fault": "office_missing"},
+        {"id": "", "type": "clear_faults"},
+        {"id": "", "type": "ingest_fixture", "customer_id": "acme", "fixture": "a.json"},
+    ],
+)
+def test_step_ids_reject_empty_strings(step: dict[str, object]) -> None:
+    data = valid_scenario()
+    data["steps"] = [step]
+
+    with pytest.raises(ValidationError):
+        SimulationScenario.model_validate(data)
+
+
+@pytest.mark.parametrize(
     ("payload", "expected_type"),
     [
         ({"type": "output_equals", "path": "summary", "value": None}, OutputEqualsExpectation),
