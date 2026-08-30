@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Generic, TypeVar
 from uuid import UUID
 
@@ -20,6 +21,7 @@ class SkillContext:
     """Dependencies and retrieved customer context supplied by the runner."""
 
     execution_id: UUID
+    now: datetime
     customer_id: str
     memory: MemoryStore
     supporting_memory: tuple[MemoryRecord, ...]

@@ -1,7 +1,7 @@
 """Quarterly Business Review generation backed by Customer Memory and OfficeCLI."""
 
 from contextlib import ExitStack
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -143,7 +143,7 @@ class QBRSkill(Skill[QBRInput, QBROutput]):
         output = QBROutput(
             customer_id=skill_input.customer_id,
             quarter=skill_input.quarter,
-            generated_at=datetime.now(UTC),
+            generated_at=context.now,
             artifact_version=version,
             executive_summary=self._summary(skill_input.customer_id, skill_input.quarter, groups),
             adoption_trends=self._evidence(

@@ -1,12 +1,12 @@
 """Contract-enforcing lifecycle runner for registered skills."""
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
 
+from csaf.core.clock import IdFactory, Now, utc_now
 from csaf.memory import MemoryStore
 from csaf.schemas import MemoryQuery
 from csaf.skills.base import SkillContext
@@ -18,9 +18,18 @@ from csaf.skills.types import ArtifactHandler, SkillResultDraft, SkillRunResult
 class SkillRunner:
     """Validate, retrieve context, execute, commit effects, and return a result."""
 
-    def __init__(self, registry: SkillRegistry, memory: MemoryStore) -> None:
+    def __init__(
+        self,
+        registry: SkillRegistry,
+        memory: MemoryStore,
+        *,
+        now: Now = utc_now,
+        id_factory: IdFactory = uuid4,
+    ) -> None:
         self._registry = registry
         self._memory = memory
+        self._now = now
+        self._id_factory = id_factory
 
     def run(
         self,
@@ -32,8 +41,8 @@ class SkillRunner:
         """Run a registered skill through the standard lifecycle."""
 
         skill = self._registry.get(name)
-        started_at = datetime.now(UTC)
-        execution_id = uuid4()
+        started_at = self._now()
+        execution_id = self._id_factory()
         try:
             skill_input = skill.input_model.model_validate(raw_input)
         except ValidationError as error:
@@ -58,6 +67,7 @@ class SkillRunner:
         )
         context = SkillContext(
             execution_id=execution_id,
+            now=started_at,
             customer_id=customer_id,
             memory=self._memory,
             supporting_memory=supporting_memory,
@@ -79,7 +89,7 @@ class SkillRunner:
             skill_name=skill.metadata.name,
             skill_version=skill.metadata.version,
             started_at=started_at,
-            completed_at=datetime.now(UTC),
+            completed_at=self._now(),
             output=output,
             memory_updates=updates,
             artifacts=draft.artifacts,

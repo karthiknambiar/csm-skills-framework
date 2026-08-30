@@ -1,6 +1,6 @@
 """Deterministic, citation-first Account Brief vertical slice."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -99,7 +99,7 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
         skill_input: AccountBriefInput,
         context: SkillContext,
     ) -> SkillResultDraft[AccountBriefOutput]:
-        generated_at = datetime.now(UTC)
+        generated_at = context.now
         records = self._in_time_window(
             context.supporting_memory,
             generated_at,

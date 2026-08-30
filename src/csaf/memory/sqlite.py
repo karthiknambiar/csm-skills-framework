@@ -8,13 +8,13 @@ from threading import RLock
 from typing import Any
 from uuid import UUID, uuid4
 
+from csaf.core.clock import IdFactory, Now, utc_now
 from csaf.schemas.memory import (
     MemoryKind,
     MemoryQuery,
     MemoryRecord,
     MemoryRecordCreate,
     SourceReference,
-    utc_now,
 )
 
 _SCHEMA = """
@@ -44,10 +44,18 @@ CREATE INDEX IF NOT EXISTS idx_memory_customer_key
 class SQLiteMemoryStore:
     """A small, thread-safe SQLite store that only inserts new revisions."""
 
-    def __init__(self, database: str | Path = ":memory:") -> None:
+    def __init__(
+        self,
+        database: str | Path = ":memory:",
+        *,
+        now: Now = utc_now,
+        id_factory: IdFactory = uuid4,
+    ) -> None:
         self._connection = sqlite3.connect(str(database), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = RLock()
+        self._now = now
+        self._id_factory = id_factory
         with self._connection:
             self._connection.executescript(_SCHEMA)
 
@@ -58,9 +66,9 @@ class SQLiteMemoryStore:
             revision = self._next_revision(record.customer_id, record.logical_key)
             persisted = MemoryRecord(
                 **record.model_dump(),
-                id=uuid4(),
+                id=self._id_factory(),
                 revision=revision,
-                created_at=utc_now(),
+                created_at=self._now(),
             )
             self._connection.execute(
                 """
