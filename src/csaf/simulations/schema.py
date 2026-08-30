@@ -2,11 +2,77 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    PlainSerializer,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 from csaf.schemas import MemoryRecordCreate
 
-NonEmptyString = Annotated[str, Field(min_length=1)]
+NonEmptyString = Annotated[str, Field(min_length=1, pattern=r"\S")]
+
+
+class _FrozenJsonDict(dict[str, object]):
+    """A JSON object that rejects mutation through normal mapping operations."""
+
+    def _reject_mutation(self, *_: object, **__: object) -> None:
+        raise TypeError("simulation JSON values are immutable")
+
+    __setitem__ = _reject_mutation
+    __delitem__ = _reject_mutation
+    __ior__ = _reject_mutation
+    clear = _reject_mutation
+    pop = _reject_mutation
+    popitem = _reject_mutation
+    setdefault = _reject_mutation
+    update = _reject_mutation
+
+
+def _freeze_json(value: object) -> object:
+    """Recursively freeze validated JSON containers."""
+
+    if isinstance(value, dict):
+        return _FrozenJsonDict({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _dump_json(value: object) -> object:
+    """Convert immutable JSON containers back to ordinary JSON containers."""
+
+    if isinstance(value, dict):
+        return {key: _dump_json(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_dump_json(item) for item in value]
+    return value
+
+
+_FrozenJsonValue = Annotated[
+    JsonValue,
+    AfterValidator(_freeze_json),
+    PlainSerializer(_dump_json, return_type=JsonValue),
+]
+_FrozenJsonObject = Annotated[
+    dict[str, JsonValue],
+    AfterValidator(_freeze_json),
+    PlainSerializer(_dump_json, return_type=dict[str, JsonValue]),
+]
+
+
+class SimulationMemoryRecordCreate(MemoryRecordCreate):
+    """Immutable simulation fixture compatible with domain memory inputs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
+
+    metadata: _FrozenJsonObject = Field(default_factory=dict)
 
 
 class SeedMemoryStep(BaseModel):
@@ -16,7 +82,22 @@ class SeedMemoryStep(BaseModel):
 
     id: NonEmptyString | None = None
     type: Literal["seed_memory"]
-    records: tuple[MemoryRecordCreate, ...]
+    records: tuple[SimulationMemoryRecordCreate, ...]
+
+    @field_validator("records", mode="before")
+    @classmethod
+    def copy_domain_records(cls, value: object) -> object:
+        """Convert mutable domain record instances into frozen simulation copies."""
+
+        if not isinstance(value, list | tuple):
+            return value
+        fields = set(MemoryRecordCreate.model_fields)
+        return tuple(
+            record.model_dump(include=fields)
+            if isinstance(record, MemoryRecordCreate)
+            else record
+            for record in value
+        )
 
 
 class RunSkillStep(BaseModel):
@@ -27,8 +108,8 @@ class RunSkillStep(BaseModel):
     id: NonEmptyString | None = None
     type: Literal["run_skill"]
     skill: NonEmptyString
-    input: dict[str, JsonValue]
-    expect_error: str | None = None
+    input: _FrozenJsonObject
+    expect_error: NonEmptyString | None = None
 
 
 class AdvanceTimeStep(BaseModel):
@@ -38,7 +119,7 @@ class AdvanceTimeStep(BaseModel):
 
     id: NonEmptyString | None = None
     type: Literal["advance_time"]
-    seconds: int = Field(gt=0, le=31_536_000)
+    seconds: StrictInt = Field(gt=0, le=31_536_000)
 
 
 FaultName = Literal[
@@ -59,7 +140,7 @@ class SetFaultStep(BaseModel):
     id: NonEmptyString | None = None
     type: Literal["set_fault"]
     fault: FaultName
-    remaining_calls: int = Field(default=1, ge=1, le=100)
+    remaining_calls: StrictInt = Field(default=1, ge=1, le=100)
 
 
 class ClearFaultsStep(BaseModel):
@@ -106,7 +187,7 @@ class OutputEqualsExpectation(_ExpectationBase):
 
     type: Literal["output_equals"]
     path: NonEmptyString
-    value: JsonValue
+    value: _FrozenJsonValue
 
 
 class OutputPresentExpectation(_ExpectationBase):
@@ -128,7 +209,7 @@ class MemoryCountExpectation(_ExpectationBase):
 
     type: Literal["memory_count"]
     customer_id: NonEmptyString
-    count: int = Field(ge=0)
+    count: StrictInt = Field(ge=0)
 
 
 class MemoryRevisionExpectation(_ExpectationBase):
@@ -137,7 +218,7 @@ class MemoryRevisionExpectation(_ExpectationBase):
     type: Literal["memory_revision"]
     customer_id: NonEmptyString
     logical_key: NonEmptyString
-    revision: int = Field(ge=1)
+    revision: StrictInt = Field(ge=1)
 
 
 class ArtifactTypesExpectation(_ExpectationBase):
@@ -151,7 +232,7 @@ class CitationMinimumExpectation(_ExpectationBase):
     """Require at least a given number of citations."""
 
     type: Literal["citation_minimum"]
-    count: int = Field(ge=1)
+    count: StrictInt = Field(ge=1)
 
 
 class NoCrossCustomerDataExpectation(_ExpectationBase):
@@ -189,7 +270,7 @@ class SimulationScenario(BaseModel):
     schema_version: Literal[1]
     id: str = Field(pattern=r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
     title: NonEmptyString
-    seed: int
+    seed: StrictInt
     customers: tuple[NonEmptyString, ...] = Field(min_length=1)
     steps: tuple[SimulationStep, ...] = Field(min_length=1)
     expectations: tuple[SimulationExpectation, ...] = Field(min_length=1)
@@ -204,8 +285,8 @@ class SimulationScenario(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_unique_identifiers(self) -> "SimulationScenario":
-        """Reject ambiguous customer and explicit step identifiers."""
+    def validate_references_and_unique_identifiers(self) -> "SimulationScenario":
+        """Reject ambiguous identifiers and references outside the scenario."""
 
         if len(set(self.customers)) != len(self.customers):
             raise ValueError("customers must be unique")
@@ -213,4 +294,28 @@ class SimulationScenario(BaseModel):
         step_ids = [step.id for step in self.steps if step.id is not None]
         if len(set(step_ids)) != len(step_ids):
             raise ValueError("step ids must be unique")
+
+        explicit_step_ids = set(step_ids)
+        for expectation in self.expectations:
+            if expectation.step_id is not None and expectation.step_id not in explicit_step_ids:
+                raise ValueError("expectation step_id must reference an explicit step")
+
+        customer_ids = set(self.customers)
+        for step in self.steps:
+            if isinstance(step, SeedMemoryStep):
+                referenced_customer_ids = (record.customer_id for record in step.records)
+            elif isinstance(step, IngestFixtureStep):
+                referenced_customer_ids = (step.customer_id,)
+            elif isinstance(step, RunSkillStep):
+                customer_id = step.input.get("customer_id")
+                referenced_customer_ids = (customer_id,) if isinstance(customer_id, str) else ()
+            else:
+                referenced_customer_ids = ()
+            if any(customer_id not in customer_ids for customer_id in referenced_customer_ids):
+                raise ValueError("customer_id must belong to scenario customers")
+
+        for expectation in self.expectations:
+            if isinstance(expectation, MemoryCountExpectation | MemoryRevisionExpectation):
+                if expectation.customer_id not in customer_ids:
+                    raise ValueError("customer_id must belong to scenario customers")
         return self

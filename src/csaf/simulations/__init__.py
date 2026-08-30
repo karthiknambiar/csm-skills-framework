@@ -18,6 +18,7 @@ from csaf.simulations.schema import (
     SeedMemoryStep,
     SetFaultStep,
     SimulationExpectation,
+    SimulationMemoryRecordCreate,
     SimulationScenario,
     SimulationStep,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "SeedMemoryStep",
     "SetFaultStep",
     "SimulationExpectation",
+    "SimulationMemoryRecordCreate",
     "SimulationScenario",
     "SimulationStep",
 ]

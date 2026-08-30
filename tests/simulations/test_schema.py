@@ -1,11 +1,13 @@
 """Contract tests for the versioned simulation scenario DSL."""
 
 import json
+import warnings
 from copy import deepcopy
 
 import pytest
 from pydantic import ValidationError
 
+from csaf.schemas import MemoryRecordCreate
 from csaf.simulations import (
     AdvanceTimeStep,
     ArtifactTypesExpectation,
@@ -57,7 +59,6 @@ def valid_scenario() -> dict[str, object]:
         "expectations": [
             {
                 "type": "output_equals",
-                "step_id": "brief",
                 "path": "executive_summary",
                 "value": "x",
             }
@@ -146,7 +147,7 @@ def test_step_ids_reject_empty_strings(step: dict[str, object]) -> None:
         ({"type": "citation_minimum", "count": 1}, CitationMinimumExpectation),
         ({"type": "no_cross_customer_data"}, NoCrossCustomerDataExpectation),
         (
-            {"type": "no_partial_effects", "step_id": "failed-write"},
+            {"type": "no_partial_effects", "step_id": "brief"},
             NoPartialEffectsExpectation,
         ),
     ],
@@ -395,12 +396,290 @@ def test_unknown_discriminator_is_rejected(location: str) -> None:
         SimulationScenario.model_validate(data)
 
 
-def test_scenario_is_frozen_and_json_serializable_deterministically() -> None:
-    scenario = SimulationScenario.model_validate(valid_scenario())
+def test_nested_json_values_and_seed_records_are_deeply_immutable() -> None:
+    data = valid_scenario()
+    data["steps"][0]["records"][0]["metadata"] = {
+        "labels": ["enterprise"],
+        "details": {"tier": "one"},
+    }
+    data["steps"][1]["input"] = {
+        "customer_id": "acme",
+        "filters": {"kinds": ["risk"], "options": {"latest": True}},
+    }
+    data["expectations"][0]["value"] = {"sections": [{"name": "summary"}]}
+    scenario = SimulationScenario.model_validate(data)
 
-    first = json.dumps(scenario.model_dump(mode="json"), sort_keys=True)
-    second = json.dumps(scenario.model_dump(mode="json"), sort_keys=True)
+    seed_step = scenario.steps[0]
+    run_step = scenario.steps[1]
+    expectation = scenario.expectations[0]
+    assert isinstance(seed_step, SeedMemoryStep)
+    assert isinstance(run_step, RunSkillStep)
+    assert isinstance(expectation, OutputEqualsExpectation)
 
-    assert first == second
+    record = seed_step.records[0]
+    assert isinstance(record, MemoryRecordCreate)
+    with pytest.raises(ValidationError):
+        record.content = "Changed"
+    details = record.metadata["details"]
+    labels = record.metadata["labels"]
+    assert isinstance(details, dict)
+    assert isinstance(labels, tuple)
+    with pytest.raises(TypeError):
+        details["tier"] = "two"
+    with pytest.raises(TypeError):
+        labels[0] = "changed"
+
+    filters = run_step.input["filters"]
+    assert isinstance(filters, dict)
+    kinds = filters["kinds"]
+    assert isinstance(kinds, tuple)
+    with pytest.raises(TypeError):
+        filters["new"] = True
+    with pytest.raises(TypeError):
+        kinds[0] = "support"
+
+    value = expectation.value
+    assert isinstance(value, dict)
+    sections = value["sections"]
+    assert isinstance(sections, tuple)
+    section = sections[0]
+    assert isinstance(section, dict)
+    with pytest.raises(TypeError):
+        section["name"] = "changed"
+
+
+def test_seed_step_copies_domain_memory_records_into_frozen_records() -> None:
+    domain_record = MemoryRecordCreate(
+        customer_id="acme",
+        kind="profile",
+        content="Domain record",
+        metadata={"labels": ["enterprise"]},
+    )
+
+    step = SeedMemoryStep(type="seed_memory", records=(domain_record,))
+
+    assert isinstance(step.records[0], MemoryRecordCreate)
+    assert step.records[0] is not domain_record
+    with pytest.raises(ValidationError):
+        step.records[0].content = "Changed"
+
+
+@pytest.mark.parametrize(
+    "expectation",
+    [
+        {"type": "output_present", "path": "summary", "step_id": "missing"},
+        {"type": "no_partial_effects", "step_id": "missing"},
+    ],
+)
+def test_expectation_step_references_must_resolve(expectation: dict[str, object]) -> None:
+    data = valid_scenario()
+    data["expectations"] = [expectation]
+
+    with pytest.raises(
+        ValidationError, match="expectation step_id must reference an explicit step"
+    ):
+        SimulationScenario.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    ("step", "expectation"),
+    [
+        (
+            {
+                "type": "seed_memory",
+                "records": [
+                    {"customer_id": "other", "kind": "profile", "content": "Other"}
+                ],
+            },
+            None,
+        ),
+        ({"type": "ingest_fixture", "customer_id": "other", "fixture": "a.json"}, None),
+        (
+            {"type": "run_skill", "skill": "qbr", "input": {"customer_id": "other"}},
+            None,
+        ),
+        (None, {"type": "memory_count", "customer_id": "other", "count": 0}),
+        (
+            None,
+            {
+                "type": "memory_revision",
+                "customer_id": "other",
+                "logical_key": "risk",
+                "revision": 1,
+            },
+        ),
+    ],
+)
+def test_customer_references_must_belong_to_scenario(
+    step: dict[str, object] | None, expectation: dict[str, object] | None
+) -> None:
+    data = valid_scenario()
+    if step is not None:
+        data["steps"] = [*data["steps"], step]
+    if expectation is not None:
+        data["expectations"] = [expectation]
+
+    with pytest.raises(ValidationError, match="customer_id must belong to scenario customers"):
+        SimulationScenario.model_validate(data)
+
+
+def test_run_skill_only_interprets_exact_string_customer_id_key() -> None:
+    data = valid_scenario()
+    data["steps"] = [
+        *data["steps"],
+        {
+            "type": "run_skill",
+            "skill": "qbr",
+            "input": {"target_customer_id": "other", "customer_id": None},
+        },
+    ]
+
+    assert len(SimulationScenario.model_validate(data).steps) == 3
+
+
+@pytest.mark.parametrize("invalid", [True, "1", 1.0])
+@pytest.mark.parametrize(
+    "target",
+    ["seed", "seconds", "remaining_calls", "memory_count", "revision", "citation_count"],
+)
+def test_numeric_dsl_fields_reject_coercion(target: str, invalid: object) -> None:
+    data = valid_scenario()
+    if target == "seed":
+        data["seed"] = invalid
+    elif target == "seconds":
+        data["steps"] = [{"type": "advance_time", "seconds": invalid}]
+        data["expectations"] = [{"type": "no_cross_customer_data"}]
+    elif target == "remaining_calls":
+        data["steps"] = [
+            {
+                "type": "set_fault",
+                "fault": "connector_timeout",
+                "remaining_calls": invalid,
+            }
+        ]
+        data["expectations"] = [{"type": "no_cross_customer_data"}]
+    elif target == "memory_count":
+        data["expectations"] = [
+            {"type": "memory_count", "customer_id": "acme", "count": invalid}
+        ]
+    elif target == "revision":
+        data["expectations"] = [
+            {
+                "type": "memory_revision",
+                "customer_id": "acme",
+                "logical_key": "risk",
+                "revision": invalid,
+            }
+        ]
+    else:
+        data["expectations"] = [{"type": "citation_minimum", "count": invalid}]
+
+    with pytest.raises(ValidationError):
+        SimulationScenario.model_validate(data)
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["title", "customer", "step_id", "skill", "expect_error", "fixture", "path", "artifact"],
+)
+def test_non_empty_strings_reject_whitespace_only_values(target: str) -> None:
+    data = valid_scenario()
+    if target == "title":
+        data["title"] = " \t"
+    elif target == "customer":
+        data["customers"] = [" \t"]
+    elif target == "step_id":
+        data["steps"][1]["id"] = " \t"
+    elif target == "skill":
+        data["steps"][1]["skill"] = " \t"
+    elif target == "expect_error":
+        data["steps"][1]["expect_error"] = " \t"
+    elif target == "fixture":
+        data["steps"] = [
+            *data["steps"],
+            {"type": "ingest_fixture", "customer_id": "acme", "fixture": " \t"},
+        ]
+    elif target == "path":
+        data["expectations"] = [{"type": "output_present", "path": " \t"}]
+    else:
+        data["expectations"] = [{"type": "artifact_types", "values": [" \t"]}]
+
+    with pytest.raises(ValidationError):
+        SimulationScenario.model_validate(data)
+
+
+def test_scenario_is_frozen_and_json_round_trips_without_warnings() -> None:
+    data = valid_scenario()
+    data["steps"][1]["input"] = {"customer_id": "acme", "nested": {"values": [1, 2]}}
+    data["expectations"][0]["value"] = {"sections": ["summary"]}
+    scenario = SimulationScenario.model_validate(data)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        dumped = scenario.model_dump(mode="json")
+    encoded = json.dumps(dumped, sort_keys=True)
+    restored = SimulationScenario.model_validate(json.loads(encoded))
+
+    assert restored == scenario
+    assert restored.model_dump(mode="json") == dumped
     with pytest.raises(ValidationError):
         scenario.title = "Changed"
+
+
+def test_json_schema_preserves_discriminators_strict_shape_and_bounds() -> None:
+    schema = SimulationScenario.model_json_schema(mode="validation")
+    definitions = schema["$defs"]
+
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {
+        "schema_version",
+        "id",
+        "title",
+        "seed",
+        "customers",
+        "steps",
+        "expectations",
+    }
+    assert schema["properties"]["customers"]["minItems"] == 1
+    assert schema["properties"]["schema_version"]["const"] == 1
+    assert schema["properties"]["title"]["pattern"] == r"\S"
+
+    step_items = schema["properties"]["steps"]["items"]
+    assert step_items["discriminator"]["propertyName"] == "type"
+    assert set(step_items["discriminator"]["mapping"]) == {
+        "advance_time",
+        "clear_faults",
+        "ingest_fixture",
+        "run_skill",
+        "seed_memory",
+        "set_fault",
+    }
+    expectation_items = schema["properties"]["expectations"]["items"]
+    assert expectation_items["discriminator"]["propertyName"] == "type"
+    assert len(expectation_items["discriminator"]["mapping"]) == 9
+
+    for name in step_items["discriminator"]["mapping"].values():
+        assert definitions[name.removeprefix("#/$defs/")]["additionalProperties"] is False
+    for name in expectation_items["discriminator"]["mapping"].values():
+        assert definitions[name.removeprefix("#/$defs/")]["additionalProperties"] is False
+    assert definitions["SimulationMemoryRecordCreate"]["additionalProperties"] is False
+    assert set(definitions["RunSkillStep"]["required"]) == {"type", "skill", "input"}
+    assert set(definitions["OutputEqualsExpectation"]["required"]) == {
+        "type",
+        "path",
+        "value",
+    }
+    assert {"customer_id", "kind", "content"}.issubset(
+        definitions["SimulationMemoryRecordCreate"]["required"]
+    )
+
+    seconds = definitions["AdvanceTimeStep"]["properties"]["seconds"]
+    assert seconds["exclusiveMinimum"] == 0
+    assert seconds["maximum"] == 31_536_000
+    remaining_calls = definitions["SetFaultStep"]["properties"]["remaining_calls"]
+    assert remaining_calls["minimum"] == 1
+    assert remaining_calls["maximum"] == 100
+    assert definitions["MemoryCountExpectation"]["properties"]["count"]["minimum"] == 0
+    assert definitions["MemoryRevisionExpectation"]["properties"]["revision"]["minimum"] == 1
+    assert definitions["CitationMinimumExpectation"]["properties"]["count"]["minimum"] == 1
+    assert definitions["ArtifactTypesExpectation"]["properties"]["values"]["minItems"] == 1
