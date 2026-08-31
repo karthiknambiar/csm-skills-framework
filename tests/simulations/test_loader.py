@@ -266,6 +266,24 @@ def test_rejects_duplicate_ids_across_files(tmp_path: Path) -> None:
     assert caught.value.__cause__ is not None
 
 
+def test_duplicate_id_diagnostics_do_not_echo_scenario_id(tmp_path: Path) -> None:
+    first = tmp_path / "first.json"
+    duplicate = tmp_path / "duplicate.json"
+    secret_id = "secret-valid-id-do-not-leak"
+    write_scenario(first, secret_id)
+    write_scenario(duplicate, secret_id)
+
+    with pytest.raises(SimulationDatasetError) as caught:
+        load_scenarios(tmp_path)
+
+    message = str(caught.value)
+    assert "duplicate scenario id" in message
+    assert str(first) in message
+    assert str(duplicate) in message
+    assert_traceback_and_cause_chain_hide(caught.value, secret_id)
+    assert type(caught.value.__cause__) is ValueError
+
+
 @pytest.mark.parametrize(
     "fixture",
     [

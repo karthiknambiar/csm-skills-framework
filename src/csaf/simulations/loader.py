@@ -205,9 +205,7 @@ def load_scenarios(path: str | Path) -> tuple[SimulationScenario, ...]:
         scenario = _load_source(source)
         if scenario.id in scenario_sources:
             first_source = scenario_sources[scenario.id]
-            cause = ValueError(
-                f"duplicate scenario id {scenario.id!r}; first defined in {first_source}"
-            )
+            cause = ValueError(f"first defined in {first_source}")
             raise _dataset_error(source, "duplicate scenario id", cause) from cause
         scenario_sources[scenario.id] = source
         scenarios.append(scenario)
