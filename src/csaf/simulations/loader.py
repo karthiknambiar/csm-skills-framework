@@ -123,6 +123,8 @@ def _load_source(source: Path) -> SimulationScenario:
         json_failure = ValueError(detail)
     except _DuplicateJsonKeyError:
         json_failure = ValueError("duplicate JSON object key")
+    except RecursionError:
+        json_failure = ValueError("JSON nesting exceeds supported depth")
     except ValueError:
         json_failure = ValueError("JSON value could not be decoded")
     if json_failure is not None:

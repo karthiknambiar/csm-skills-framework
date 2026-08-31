@@ -143,6 +143,20 @@ def test_wraps_json_integer_digit_limit_errors(tmp_path: Path) -> None:
     assert type(caught.value.__cause__) is ValueError
 
 
+def test_wraps_excessive_json_nesting_without_leaking_content(tmp_path: Path) -> None:
+    source = tmp_path / "deeply-nested.json"
+    secret = "secret-deep-content"
+    encoded = '{"level":' * 5000 + f'"{secret}"' + "}" * 5000
+    source.write_text(encoded, encoding="utf-8")
+
+    with pytest.raises(SimulationDatasetError, match=source.name) as caught:
+        load_scenarios(source)
+
+    assert "JSON nesting exceeds supported depth" in str(caught.value)
+    assert_traceback_and_cause_chain_hide(caught.value, secret)
+    assert type(caught.value.__cause__) is ValueError
+
+
 @pytest.mark.parametrize("location", ["root", "nested"])
 def test_rejects_duplicate_json_keys_without_echoing_the_key(
     tmp_path: Path, location: str
