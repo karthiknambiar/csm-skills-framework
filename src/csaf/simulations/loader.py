@@ -14,6 +14,10 @@ class SimulationDatasetError(ValueError):
     """A simulation dataset could not be loaded safely and completely."""
 
 
+class _DuplicateJsonKeyError(ValueError):
+    """A JSON object contains a repeated key."""
+
+
 def _dataset_error(source: Path, message: str, cause: Exception) -> SimulationDatasetError:
     """Build a consistently sourced public dataset error."""
 
@@ -64,6 +68,17 @@ def _validation_summary(error: ValidationError) -> str:
     return "; ".join(details)
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object while rejecting repeated keys at every depth."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError
+        result[key] = value
+    return result
+
+
 def _validate_fixture_boundaries(scenario: SimulationScenario) -> None:
     """Reject fixture references that can escape the fixture dataset root."""
 
@@ -90,27 +105,42 @@ def _load_source(source: Path) -> SimulationScenario:
     except OSError as cause:
         raise _dataset_error(source, "unable to read scenario file", cause) from cause
 
+    decode_failure: ValueError | None = None
     try:
         text = raw.decode("utf-8")
-    except UnicodeDecodeError as cause:
-        raise _dataset_error(source, "scenario file is not UTF-8", cause) from cause
+    except UnicodeDecodeError as error:
+        decode_failure = ValueError(f"invalid UTF-8 at byte offset {error.start}")
+    if decode_failure is not None:
+        raise _dataset_error(
+            source, "scenario file is not UTF-8", decode_failure
+        ) from decode_failure
 
+    json_failure: ValueError | None = None
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as cause:
-        detail = f"malformed JSON at line {cause.lineno} column {cause.colno}"
-        raise _dataset_error(source, detail, cause) from cause
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except json.JSONDecodeError as error:
+        detail = f"malformed JSON at line {error.lineno} column {error.colno}"
+        json_failure = ValueError(detail)
+    except _DuplicateJsonKeyError:
+        json_failure = ValueError("duplicate JSON object key")
+    except ValueError:
+        json_failure = ValueError("JSON value could not be decoded")
+    if json_failure is not None:
+        raise _dataset_error(source, "invalid JSON document", json_failure) from json_failure
 
     if not isinstance(payload, dict):
         cause = TypeError("scenario root must be a JSON object")
         raise _dataset_error(source, "invalid scenario root", cause) from cause
 
+    validation_failure: ValueError | None = None
     try:
         scenario = SimulationScenario.model_validate(payload)
-    except ValidationError as cause:
-        summary = _validation_summary(cause)
-        safe_cause = ValueError(summary)
-        raise _dataset_error(source, "scenario schema validation failed", safe_cause) from cause
+    except ValidationError as error:
+        validation_failure = ValueError(_validation_summary(error))
+    if validation_failure is not None:
+        raise _dataset_error(
+            source, "scenario schema validation failed", validation_failure
+        ) from validation_failure
 
     try:
         _validate_fixture_boundaries(scenario)

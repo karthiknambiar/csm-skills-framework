@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,20 @@ def scenario_payload(
 
 def write_scenario(path: Path, scenario_id: str, *, fixture: str | None = None) -> None:
     path.write_text(json.dumps(scenario_payload(scenario_id, fixture=fixture)), encoding="utf-8")
+
+
+def assert_traceback_and_cause_chain_hide(error: BaseException, secret: str) -> None:
+    """Assert public diagnostics and every explicit cause omit source content."""
+
+    assert secret not in "".join(traceback.format_exception(error))
+    assert error.__context__ is None
+    cause = error.__cause__
+    assert cause is not None
+    while cause is not None:
+        cause_text = f"{cause!s}\n{cause!r}\n{vars(cause)!r}"
+        assert secret not in cause_text
+        assert cause.__context__ is None
+        cause = cause.__cause__
 
 
 def test_loads_one_json_file_as_an_immutable_tuple(tmp_path: Path) -> None:
@@ -100,8 +115,8 @@ def test_rejects_non_utf8_without_leaking_file_contents(tmp_path: Path) -> None:
     with pytest.raises(SimulationDatasetError, match=source.name) as caught:
         load_scenarios(source)
 
-    assert "private" not in str(caught.value)
-    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
+    assert_traceback_and_cause_chain_hide(caught.value, "private")
+    assert type(caught.value.__cause__) is ValueError
 
 
 def test_rejects_malformed_json_without_leaking_file_contents(tmp_path: Path) -> None:
@@ -111,8 +126,49 @@ def test_rejects_malformed_json_without_leaking_file_contents(tmp_path: Path) ->
     with pytest.raises(SimulationDatasetError, match=source.name) as caught:
         load_scenarios(source)
 
-    assert "secret-value" not in str(caught.value)
-    assert isinstance(caught.value.__cause__, json.JSONDecodeError)
+    assert_traceback_and_cause_chain_hide(caught.value, "secret-value")
+    assert type(caught.value.__cause__) is ValueError
+
+
+def test_wraps_json_integer_digit_limit_errors(tmp_path: Path) -> None:
+    source = tmp_path / "huge-number.json"
+    encoded = json.dumps(scenario_payload()).replace('"seed": 7', '"seed": ' + "9" * 5000)
+    source.write_text(encoded, encoding="utf-8")
+
+    with pytest.raises(SimulationDatasetError, match=source.name) as caught:
+        load_scenarios(source)
+
+    assert "JSON" in str(caught.value)
+    assert_traceback_and_cause_chain_hide(caught.value, "9" * 50)
+    assert type(caught.value.__cause__) is ValueError
+
+
+@pytest.mark.parametrize("location", ["root", "nested"])
+def test_rejects_duplicate_json_keys_without_echoing_the_key(
+    tmp_path: Path, location: str
+) -> None:
+    source = tmp_path / f"duplicate-{location}.json"
+    secret_key = "secret-key-do-not-leak"
+    if location == "root":
+        encoded = json.dumps(scenario_payload())[:-1]
+        encoded += f', "{secret_key}": 1, "{secret_key}": 2}}'
+    else:
+        payload = scenario_payload()
+        step = (
+            '{"type":"run_skill","skill":"brief","input":'
+            f'{{"customer_id":"acme","{secret_key}":1,"{secret_key}":2}}}}'
+        )
+        encoded = json.dumps(payload).replace(
+            '{"type": "advance_time", "seconds": 1}', step
+        )
+    source.write_text(encoded, encoding="utf-8")
+
+    with pytest.raises(SimulationDatasetError, match=source.name) as caught:
+        load_scenarios(source)
+
+    assert "duplicate JSON object key" in str(caught.value)
+    assert_traceback_and_cause_chain_hide(caught.value, secret_key)
+    assert type(caught.value.__cause__) is ValueError
 
 
 @pytest.mark.parametrize("root", [[], [scenario_payload()], None, "scenario"])
@@ -146,7 +202,7 @@ def test_wraps_schema_validation_errors(
         load_scenarios(source)
 
     assert cause_text in str(caught.value)
-    assert isinstance(caught.value.__cause__, ValidationError)
+    assert type(caught.value.__cause__) is ValueError
 
 
 def test_schema_validation_error_does_not_leak_invalid_discriminator(tmp_path: Path) -> None:
@@ -163,7 +219,8 @@ def test_schema_validation_error_does_not_leak_invalid_discriminator(tmp_path: P
     assert "steps.0" in message
     assert "union_tag_invalid" in message
     assert "secret-do-not-leak" not in message
-    assert isinstance(caught.value.__cause__, ValidationError)
+    assert_traceback_and_cause_chain_hide(caught.value, "secret-do-not-leak")
+    assert type(caught.value.__cause__) is ValueError
 
 
 def test_rejects_duplicate_ids_across_files(tmp_path: Path) -> None:
