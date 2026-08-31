@@ -180,6 +180,56 @@ def test_world_rejects_naive_start_and_workspace_file(tmp_path: Path) -> None:
         SimulationWorld.create(workspace_file, START, 1)
 
 
+def test_world_rejects_reusing_a_workspace_database_without_leaking_state(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "world"
+    first = SimulationWorld.create(workspace, START, 1)
+    try:
+        first.seed((_record("acme", "private"),))
+    finally:
+        first.close()
+
+    with pytest.raises(ValueError, match="database.*already exists"):
+        SimulationWorld.create(workspace, START, 1)
+
+
+def test_world_rejects_database_symlink_without_touching_target(tmp_path: Path) -> None:
+    workspace = tmp_path / "world"
+    workspace.mkdir()
+    external = tmp_path / "external.sqlite3"
+    original = b"external-state"
+    external.write_bytes(original)
+    database_path = workspace / "simulation.sqlite3"
+    try:
+        database_path.symlink_to(external)
+    except OSError as error:
+        pytest.skip(f"file symlinks unavailable: {error}")
+
+    with pytest.raises(ValueError, match="database.*already exists"):
+        SimulationWorld.create(workspace, START, 1)
+
+    assert database_path.is_symlink()
+    assert external.read_bytes() == original
+
+
+def test_world_cleans_its_reserved_database_when_runtime_creation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "world"
+
+    def fail_runtime(database: Path, **_: object) -> None:
+        assert Path(database).is_file()
+        raise RuntimeError("runtime failed")
+
+    monkeypatch.setattr("csaf.simulations.world.create_runtime", fail_runtime)
+    with pytest.raises(RuntimeError, match="runtime failed"):
+        SimulationWorld.create(workspace, START, 1)
+
+    assert not (workspace / "simulation.sqlite3").exists()
+
+
 def test_world_uuid_sequence_is_exact_and_seed_dependent(tmp_path: Path) -> None:
     first = SimulationWorld.create(tmp_path / "first", START, 9)
     second = SimulationWorld.create(tmp_path / "second", START, 10)
@@ -336,6 +386,16 @@ def test_canonical_result_preserves_sibling_path_prefixes(tmp_path: Path) -> Non
         world.close()
 
 
+@pytest.mark.parametrize("sentinel", [float("nan"), float("inf"), float("-inf")])
+def test_canonical_result_rejects_nested_non_finite_floats(
+    tmp_path: Path,
+    sentinel: float,
+) -> None:
+    with SimulationWorld.create(tmp_path / "world", START, 1) as world:
+        with pytest.raises(ValueError, match="finite"):
+            world.canonical_result({"outer": [{"value": sentinel}], "ordinary": 1.25})
+
+
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
     world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:
@@ -358,6 +418,36 @@ def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Pa
                 world.write_artifacts(result, unsafe)
     finally:
         world.close()
+
+
+def test_write_artifacts_is_a_real_skill_runner_artifact_handler(tmp_path: Path) -> None:
+    with SimulationWorld.create(tmp_path / "world", START, 4) as world:
+        result = world.runtime.runner.run(
+            "qbr",
+            {"customer_id": "acme", "quarter": "2026-Q3"},
+            artifact_handler=world.write_artifacts,
+        )
+
+        written = tuple(world.workspace / "artifacts" / item.filename for item in result.artifacts)
+        assert tuple(path.name for path in written) == (
+            "acme-2026-Q3-qbr-v1.pptx",
+            "acme-2026-Q3-qbr-v1.docx",
+        )
+        assert tuple(path.read_bytes() for path in written) == tuple(
+            item.content for item in result.artifacts
+        )
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    [object(), {"artifacts": ()}, b"not artifacts", ("not an artifact",)],
+)
+def test_write_artifacts_rejects_unsupported_input_shapes(
+    tmp_path: Path, unsupported: object
+) -> None:
+    with SimulationWorld.create(tmp_path / "world", START, 1) as world:
+        with pytest.raises(TypeError, match="artifacts"):
+            world.write_artifacts(unsupported)
 
 
 @pytest.mark.parametrize(

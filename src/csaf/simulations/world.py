@@ -1,12 +1,15 @@
 """Isolated deterministic runtime used by customer-journey simulations."""
 
 import json
+import os
 import re
 import sqlite3
+import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from math import isfinite
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -17,6 +20,7 @@ from csaf.core import Runtime, create_runtime
 from csaf.office import OfficeCLIError, OfficeRenderRequest
 from csaf.schemas import MemoryRecord, MemoryRecordCreate
 from csaf.simulations.faults import FaultRegistry
+from csaf.skills import Artifact, SkillRunResult
 
 _DATABASE_FILENAME = "simulation.sqlite3"
 _WORKSPACE_MARKER = "<workspace>"
@@ -122,16 +126,21 @@ class SimulationWorld:
             raise NotADirectoryError(f"simulation workspace is not a directory: {workspace}")
         resolved_workspace.mkdir(parents=True, exist_ok=True)
         database_path = resolved_workspace / _DATABASE_FILENAME
+        database_identity = _reserve_database(database_path, resolved_workspace)
         clock = MutableClock(start)
         faults = FaultRegistry()
         office = SimulationOfficeRenderer(faults)
         id_factory = _uuid_factory(seed)
-        runtime = create_runtime(
-            database_path,
-            office_renderer=office,
-            now=clock.now,
-            id_factory=id_factory,
-        )
+        try:
+            runtime = create_runtime(
+                database_path,
+                office_renderer=office,
+                now=clock.now,
+                id_factory=id_factory,
+            )
+        except Exception:
+            _remove_reserved_database(database_path, database_identity)
+            raise
         return cls(
             workspace=resolved_workspace,
             database_path=database_path,
@@ -204,7 +213,7 @@ class SimulationWorld:
         except ValueError as error:
             raise ValueError("artifact directory must remain beneath the workspace") from error
 
-        artifacts = getattr(result, "artifacts", ())
+        artifacts = _artifact_sequence(result)
         targets: list[tuple[Path, bytes]] = []
         for artifact in artifacts:
             filename = Path(artifact.filename)
@@ -246,6 +255,37 @@ def _require_aware(value: datetime, name: str) -> None:
         raise ValueError(f"{name} must include a timezone")
 
 
+def _reserve_database(database_path: Path, workspace: Path) -> tuple[int, int]:
+    try:
+        descriptor = os.open(
+            database_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+    except OSError as error:
+        raise ValueError(
+            f"simulation database already exists or is unsafe: {database_path}"
+        ) from error
+    try:
+        details = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = (details.st_dev, details.st_ino)
+    if not stat.S_ISREG(details.st_mode) or database_path.resolve(strict=True).parent != workspace:
+        _remove_reserved_database(database_path, identity)
+        raise ValueError(f"simulation database is not a contained regular file: {database_path}")
+    return identity
+
+
+def _remove_reserved_database(database_path: Path, identity: tuple[int, int]) -> None:
+    try:
+        details = os.lstat(database_path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISREG(details.st_mode) and (details.st_dev, details.st_ino) == identity:
+        database_path.unlink()
+
+
 def _uuid_factory(seed: int):
     counter = 0
 
@@ -256,6 +296,16 @@ def _uuid_factory(seed: int):
         return result
 
     return create_id
+
+
+def _artifact_sequence(value: object) -> tuple[Artifact, ...]:
+    if isinstance(value, SkillRunResult):
+        return value.artifacts
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        artifacts = tuple(value)
+        if all(isinstance(artifact, Artifact) for artifact in artifacts):
+            return artifacts
+    raise TypeError("write_artifacts expects a sequence of artifacts or a SkillRunResult")
 
 
 def _canonicalize(value: object, workspace: Path) -> Any:
@@ -280,7 +330,11 @@ def _canonicalize(value: object, workspace: Path) -> Any:
         return _normalize_workspace_path(str(value), workspace)
     if isinstance(value, str):
         return _normalize_workspace_path(value, workspace)
-    if value is None or isinstance(value, bool | int | float):
+    if isinstance(value, float):
+        if not isfinite(value):
+            raise ValueError("canonical simulation floats must be finite")
+        return value
+    if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, bytes):
         return value.decode("utf-8")
