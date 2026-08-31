@@ -261,12 +261,36 @@ def test_canonical_result_normalizes_only_workspace_paths(tmp_path: Path) -> Non
             "timestamp": START,
         }
         canonical = world.canonical_result(value)
-        assert canonical["inside"] == "$WORKSPACE/artifacts/brief.md"
+        assert canonical["inside"] == "<workspace>/artifacts/brief.md"
         assert canonical["outside"] == value["outside"]
         assert canonical["id"] == value["id"]
         assert canonical["timestamp"] == START.isoformat()
     finally:
         world.close()
+
+
+def test_canonical_result_normalizes_embedded_workspace_paths_across_worlds(
+    tmp_path: Path,
+) -> None:
+    first = SimulationWorld.create(tmp_path / "first", START, 1)
+    second = SimulationWorld.create(tmp_path / "second", START, 1)
+    try:
+        first_path = first.workspace / "templates" / "qbr.docx"
+        second_path = second.workspace / "templates" / "qbr.docx"
+        first_message = f"render failed at {first_path}; retry from unrelated/path"
+        second_message = (
+            f"render failed at {str(second_path).replace(chr(92), '/')}; retry from unrelated/path"
+        )
+
+        first_result = first.canonical_result({"error": first_message})
+        second_result = second.canonical_result({"error": second_message})
+        assert first_result == second_result
+        assert first_result["error"] == (
+            "render failed at <workspace>/templates/qbr.docx; retry from unrelated/path"
+        )
+    finally:
+        first.close()
+        second.close()
 
 
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
@@ -289,6 +313,23 @@ def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Pa
         for unsafe in (Path("../escape"), (tmp_path / "absolute").resolve()):
             with pytest.raises(ValueError, match="relative|workspace"):
                 world.write_artifacts(result, unsafe)
+    finally:
+        world.close()
+
+
+@pytest.mark.parametrize(
+    "directory",
+    [Path("staging/../outputs"), Path(r"staging\..\outputs")],
+)
+def test_write_artifacts_rejects_lexical_parent_traversal_inside_workspace(
+    tmp_path: Path,
+    directory: Path,
+) -> None:
+    world = SimulationWorld.create(tmp_path / "world", START, 1)
+    try:
+        result = SkillRunResult.model_construct(artifacts=())
+        with pytest.raises(ValueError, match="traversal"):
+            world.write_artifacts(result, directory)
     finally:
         world.close()
 

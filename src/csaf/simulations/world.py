@@ -1,6 +1,7 @@
 """Isolated deterministic runtime used by customer-journey simulations."""
 
 import json
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -18,7 +19,7 @@ from csaf.schemas import MemoryRecord, MemoryRecordCreate
 from csaf.simulations.faults import FaultRegistry
 
 _DATABASE_FILENAME = "simulation.sqlite3"
-_WORKSPACE_MARKER = "$WORKSPACE"
+_WORKSPACE_MARKER = "<workspace>"
 
 
 class _FrozenDict(dict[str, Any]):
@@ -195,6 +196,8 @@ class SimulationWorld:
         relative_directory = Path(directory)
         if relative_directory.is_absolute():
             raise ValueError("artifact directory must be relative to the workspace")
+        if ".." in str(directory).replace("\\", "/").split("/"):
+            raise ValueError("relative artifact directory must not contain parent traversal")
         target_directory = (self.workspace / relative_directory).resolve()
         try:
             target_directory.relative_to(self.workspace)
@@ -285,17 +288,18 @@ def _canonicalize(value: object, workspace: Path) -> Any:
 
 
 def _normalize_workspace_path(value: str, workspace: Path) -> str:
-    workspace_text = str(workspace)
-    candidates = (workspace_text, workspace_text.replace("\\", "/"))
+    candidates = (str(workspace), str(workspace).replace("\\", "/"))
     for candidate in candidates:
-        if value == candidate:
-            return _WORKSPACE_MARKER
-        separator = "/" if "/" in candidate else "\\"
-        prefix = f"{candidate}{separator}"
-        if value.startswith(prefix):
-            suffix = value[len(prefix) :].replace("\\", "/")
-            return f"{_WORKSPACE_MARKER}/{suffix}"
-    return value
+        pattern = re.compile(
+            rf"{re.escape(candidate)}(?=$|[\\/\s;,:)'\"\]\}}])",
+        )
+        value = pattern.sub(_WORKSPACE_MARKER, value)
+    return _normalize_workspace_suffixes(value)
+
+
+def _normalize_workspace_suffixes(value: str) -> str:
+    pattern = re.compile(rf"{re.escape(_WORKSPACE_MARKER)}(?:[\\/][^\s;,:)'\"\]\}}]*)*")
+    return pattern.sub(lambda match: match.group().replace("\\", "/"), value)
 
 
 def _freeze(value: object) -> Any:
