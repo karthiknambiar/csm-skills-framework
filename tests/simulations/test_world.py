@@ -2,8 +2,10 @@
 
 import copy
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from traceback import format_exception
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -37,6 +39,18 @@ def _record(customer_id: str, content: str, *, logical_key: str | None = None):
         metadata={"z": 2, "a": [1, {"nested": True}]},
         occurred_at=START - timedelta(days=1),
     )
+
+
+def _assert_exception_hides_path(error: BaseException, path: Path) -> None:
+    secret = str(path.resolve())
+    assert secret not in str(error)
+    assert secret not in "".join(format_exception(error))
+    seen: set[int] = set()
+    chained = error.__cause__ or error.__context__
+    while chained is not None and id(chained) not in seen:
+        seen.add(id(chained))
+        assert secret not in str(chained)
+        chained = chained.__cause__ or chained.__context__
 
 
 def _request(*, template_path: Path | None = None) -> OfficeRenderRequest:
@@ -190,8 +204,10 @@ def test_world_rejects_reusing_a_workspace_database_without_leaking_state(
     finally:
         first.close()
 
-    with pytest.raises(ValueError, match="database.*already exists"):
+    with pytest.raises(ValueError, match="database.*already exists") as caught:
         SimulationWorld.create(workspace, START, 1)
+    _assert_exception_hides_path(caught.value, workspace)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
 
 def test_world_rejects_database_symlink_without_touching_target(tmp_path: Path) -> None:
@@ -206,28 +222,82 @@ def test_world_rejects_database_symlink_without_touching_target(tmp_path: Path) 
     except OSError as error:
         pytest.skip(f"file symlinks unavailable: {error}")
 
-    with pytest.raises(ValueError, match="database.*already exists"):
+    with pytest.raises(ValueError, match="database.*already exists") as caught:
         SimulationWorld.create(workspace, START, 1)
 
+    _assert_exception_hides_path(caught.value, workspace)
     assert database_path.is_symlink()
     assert external.read_bytes() == original
+
+
+def test_world_rejects_existing_database_directory_without_exposing_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "secret-directory-customer"
+    database_path = workspace / "simulation.sqlite3"
+    database_path.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="database.*already exists") as caught:
+        SimulationWorld.create(workspace, START, 1)
+
+    _assert_exception_hides_path(caught.value, workspace)
+    assert database_path.is_dir()
 
 
 def test_world_cleans_its_reserved_database_when_runtime_creation_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = tmp_path / "world"
+    workspace = tmp_path / "secret-runtime-customer"
 
     def fail_runtime(database: Path, **_: object) -> None:
         assert Path(database).is_file()
-        raise RuntimeError("runtime failed")
+        raise RuntimeError(f"runtime failed for {database}")
 
     monkeypatch.setattr("csaf.simulations.world.create_runtime", fail_runtime)
-    with pytest.raises(RuntimeError, match="runtime failed"):
+    with pytest.raises(ValueError, match="runtime initialization failed") as caught:
         SimulationWorld.create(workspace, START, 1)
 
+    _assert_exception_hides_path(caught.value, workspace)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
     assert not (workspace / "simulation.sqlite3").exists()
+
+
+def test_world_sanitizes_database_reservation_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "secret-reservation-customer"
+
+    def fail_open(path: object, *_: object) -> int:
+        raise PermissionError(f"reservation denied for {path}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("csaf.simulations.world.os.open", fail_open)
+        with pytest.raises(ValueError, match="database.*already exists") as caught:
+            SimulationWorld.create(workspace, START, 1)
+
+    _assert_exception_hides_path(caught.value, workspace)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_world_sanitizes_reserved_database_inspection_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "secret-inspection-customer"
+
+    def fail_fstat(_: int) -> os.stat_result:
+        raise OSError(f"inspection denied for {workspace}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("csaf.simulations.world.os.fstat", fail_fstat)
+        with pytest.raises(ValueError, match="database.*already exists") as caught:
+            SimulationWorld.create(workspace, START, 1)
+
+    _assert_exception_hides_path(caught.value, workspace)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert (workspace / "simulation.sqlite3").is_file()
 
 
 def test_world_uuid_sequence_is_exact_and_seed_dependent(tmp_path: Path) -> None:

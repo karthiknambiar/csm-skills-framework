@@ -23,6 +23,8 @@ from csaf.simulations.faults import FaultRegistry
 from csaf.skills import Artifact, SkillRunResult
 
 _DATABASE_FILENAME = "simulation.sqlite3"
+_DATABASE_RESERVATION_ERROR = "simulation database already exists or is unsafe"
+_RUNTIME_INITIALIZATION_ERROR = "simulation runtime initialization failed"
 _WORKSPACE_MARKER = "<workspace>"
 
 
@@ -131,6 +133,7 @@ class SimulationWorld:
         faults = FaultRegistry()
         office = SimulationOfficeRenderer(faults)
         id_factory = _uuid_factory(seed)
+        runtime_failed = False
         try:
             runtime = create_runtime(
                 database_path,
@@ -139,8 +142,13 @@ class SimulationWorld:
                 id_factory=id_factory,
             )
         except Exception:
-            _remove_reserved_database(database_path, database_identity)
-            raise
+            runtime_failed = True
+            try:
+                _remove_reserved_database(database_path, database_identity)
+            except OSError:
+                pass
+        if runtime_failed:
+            raise ValueError(_RUNTIME_INITIALIZATION_ERROR) from None
         return cls(
             workspace=resolved_workspace,
             database_path=database_path,
@@ -256,24 +264,43 @@ def _require_aware(value: datetime, name: str) -> None:
 
 
 def _reserve_database(database_path: Path, workspace: Path) -> tuple[int, int]:
+    descriptor: int | None = None
     try:
         descriptor = os.open(
             database_path,
             os.O_CREAT | os.O_EXCL | os.O_WRONLY,
             0o600,
         )
-    except OSError as error:
-        raise ValueError(
-            f"simulation database already exists or is unsafe: {database_path}"
-        ) from error
+    except OSError:
+        pass
+    if descriptor is None:
+        raise ValueError(_DATABASE_RESERVATION_ERROR) from None
+    details: os.stat_result | None = None
+    inspection_failed = False
     try:
         details = os.fstat(descriptor)
+    except OSError:
+        inspection_failed = True
     finally:
-        os.close(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError:
+            inspection_failed = True
+    if inspection_failed or details is None:
+        raise ValueError(_DATABASE_RESERVATION_ERROR) from None
     identity = (details.st_dev, details.st_ino)
-    if not stat.S_ISREG(details.st_mode) or database_path.resolve(strict=True).parent != workspace:
-        _remove_reserved_database(database_path, identity)
-        raise ValueError(f"simulation database is not a contained regular file: {database_path}")
+    contained = False
+    if stat.S_ISREG(details.st_mode):
+        try:
+            contained = database_path.resolve(strict=True).parent == workspace
+        except OSError:
+            pass
+    if not contained:
+        try:
+            _remove_reserved_database(database_path, identity)
+        except OSError:
+            pass
+        raise ValueError(_DATABASE_RESERVATION_ERROR) from None
     return identity
 
 
