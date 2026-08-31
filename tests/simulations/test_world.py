@@ -318,6 +318,39 @@ def test_canonical_result_normalizes_spaced_workspace_path_suffixes_only(
         second.close()
 
 
+def test_canonical_result_normalizes_only_quoted_workspace_path_spans(
+    tmp_path: Path,
+) -> None:
+    first = SimulationWorld.create(tmp_path / "first", START, 1)
+    second = SimulationWorld.create(tmp_path / "second", START, 1)
+    try:
+        first_paths = (
+            first.workspace / "QBR Templates" / "file.docx",
+            first.workspace / "Archive Folder" / "second.docx",
+        )
+        second_paths = tuple(
+            str(path).replace(chr(92), "/")
+            for path in (
+                second.workspace / "QBR Templates" / "file.docx",
+                second.workspace / "Archive Folder" / "second.docx",
+            )
+        )
+        first_message = rf'before\raw "{first_paths[0]}" middle\raw "{first_paths[1]}" after\raw'
+        second_message = rf'before\raw "{second_paths[0]}" middle\raw "{second_paths[1]}" after\raw'
+
+        first_result = first.canonical_result({"message": first_message})
+        second_result = second.canonical_result({"message": second_message})
+
+        assert first_result == second_result
+        assert first_result["message"] == (
+            r'before\raw "<workspace>/QBR Templates/file.docx" '
+            r'middle\raw "<workspace>/Archive Folder/second.docx" after\raw'
+        )
+    finally:
+        first.close()
+        second.close()
+
+
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
     world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:

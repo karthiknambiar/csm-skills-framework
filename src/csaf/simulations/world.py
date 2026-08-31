@@ -288,15 +288,42 @@ def _canonicalize(value: object, workspace: Path) -> Any:
 
 
 def _normalize_workspace_path(value: str, workspace: Path) -> str:
-    candidates = (str(workspace), str(workspace).replace("\\", "/"))
-    replaced = False
-    for candidate in candidates:
-        pattern = re.compile(
-            rf"{re.escape(candidate)}(?=$|[\\/\s;,:)'\"\]\}}])",
-        )
-        value, count = pattern.subn(_WORKSPACE_MARKER, value)
-        replaced = replaced or count > 0
-    return value.replace("\\", "/") if replaced else value
+    candidates = sorted(
+        {str(workspace), str(workspace).replace("\\", "/")},
+        key=len,
+        reverse=True,
+    )
+    pattern = re.compile(
+        rf"(?:{'|'.join(re.escape(candidate) for candidate in candidates)})"
+        rf"(?=$|[\\/\s;,:)'\"\]\}}])"
+    )
+    parts: list[str] = []
+    cursor = 0
+    for match in pattern.finditer(value):
+        if match.start() < cursor:
+            continue
+        path_end = _workspace_path_end(value, match.start(), match.end())
+        parts.append(value[cursor : match.start()])
+        suffix = value[match.end() : path_end].replace("\\", "/")
+        parts.append(f"{_WORKSPACE_MARKER}{suffix}")
+        cursor = path_end
+    if not parts:
+        return value
+    parts.append(value[cursor:])
+    return "".join(parts)
+
+
+def _workspace_path_end(value: str, start: int, prefix_end: int) -> int:
+    quote = value[start - 1] if start > 0 and value[start - 1] in {'"', "'"} else None
+    if quote is not None:
+        closing_quote = value.find(quote, prefix_end)
+        return closing_quote if closing_quote >= 0 else len(value)
+    if prefix_end == len(value) or value[prefix_end] not in "\\/":
+        return prefix_end
+    for index in range(prefix_end, len(value)):
+        if value[index] in ";,\r\n)]}\"'":
+            return index
+    return len(value)
 
 
 def _freeze(value: object) -> Any:
