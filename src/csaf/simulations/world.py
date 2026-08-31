@@ -289,17 +289,14 @@ def _canonicalize(value: object, workspace: Path) -> Any:
 
 def _normalize_workspace_path(value: str, workspace: Path) -> str:
     candidates = (str(workspace), str(workspace).replace("\\", "/"))
+    replaced = False
     for candidate in candidates:
         pattern = re.compile(
             rf"{re.escape(candidate)}(?=$|[\\/\s;,:)'\"\]\}}])",
         )
-        value = pattern.sub(_WORKSPACE_MARKER, value)
-    return _normalize_workspace_suffixes(value)
-
-
-def _normalize_workspace_suffixes(value: str) -> str:
-    pattern = re.compile(rf"{re.escape(_WORKSPACE_MARKER)}(?:[\\/][^\s;,:)'\"\]\}}]*)*")
-    return pattern.sub(lambda match: match.group().replace("\\", "/"), value)
+        value, count = pattern.subn(_WORKSPACE_MARKER, value)
+        replaced = replaced or count > 0
+    return value.replace("\\", "/") if replaced else value
 
 
 def _freeze(value: object) -> Any:

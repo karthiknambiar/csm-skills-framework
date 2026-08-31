@@ -293,6 +293,31 @@ def test_canonical_result_normalizes_embedded_workspace_paths_across_worlds(
         second.close()
 
 
+def test_canonical_result_normalizes_spaced_workspace_path_suffixes_only(
+    tmp_path: Path,
+) -> None:
+    first = SimulationWorld.create(tmp_path / "first", START, 1)
+    second = SimulationWorld.create(tmp_path / "second", START, 1)
+    try:
+        first_path = first.workspace / "QBR Templates" / "file.docx"
+        second_path = str(second.workspace / "QBR Templates" / "file.docx").replace(chr(92), "/")
+        untouched = r"raw\QBR Templates\file.docx"
+
+        first_result = first.canonical_result(
+            {"message": f"failed at {first_path}; retry", "untouched": untouched}
+        )
+        second_result = second.canonical_result(
+            {"message": f"failed at {second_path}; retry", "untouched": untouched}
+        )
+
+        assert first_result == second_result
+        assert first_result["message"] == ("failed at <workspace>/QBR Templates/file.docx; retry")
+        assert first_result["untouched"] == untouched
+    finally:
+        first.close()
+        second.close()
+
+
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
     world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:
