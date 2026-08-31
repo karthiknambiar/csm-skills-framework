@@ -1,6 +1,7 @@
 """Isolated deterministic runtime used by customer-journey simulations."""
 
 import json
+import re
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -289,7 +290,8 @@ def _canonicalize(value: object, workspace: Path) -> Any:
 def _normalize_workspace_path(value: str, workspace: Path) -> str:
     renderings = {str(workspace), str(workspace).replace("\\", "/")}
     for prefix in sorted(renderings, key=len, reverse=True):
-        value = value.replace(prefix, _WORKSPACE_MARKER)
+        pattern = re.compile(rf"{re.escape(prefix)}(?=$|[\\/])")
+        value = pattern.sub(_WORKSPACE_MARKER, value)
     return value
 
 

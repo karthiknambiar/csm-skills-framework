@@ -313,6 +313,29 @@ def test_canonical_result_replaces_multiple_prefixes_without_rewriting_suffixes(
         world.close()
 
 
+def test_canonical_result_preserves_sibling_path_prefixes(tmp_path: Path) -> None:
+    world = SimulationWorld.create(tmp_path / "world", START, 1)
+    try:
+        native_prefix = str(world.workspace)
+        forward_prefix = native_prefix.replace(chr(92), "/")
+        sibling = rf"{native_prefix}-backup\file.docx"
+        message = (
+            f"sibling={sibling}; "
+            rf"first={native_prefix}\one.docx; "
+            f"second={forward_prefix}/two.docx"
+        )
+
+        canonical = world.canonical_result({"message": message})
+
+        assert canonical["message"] == (
+            f"sibling={sibling}; "
+            r"first=<workspace>\one.docx; "
+            "second=<workspace>/two.docx"
+        )
+    finally:
+        world.close()
+
+
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
     world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:
