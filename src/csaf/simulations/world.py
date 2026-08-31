@@ -6,6 +6,7 @@ import re
 import sqlite3
 import stat
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -103,6 +104,16 @@ class SimulationOfficeRenderer:
             f"simulation:{recorded.format.value}:{recorded.operation.value}:{recorded.title}"
         ).encode()
 
+    def _restore_request_count(self, count: int) -> None:
+        del self._requests[count:]
+
+
+@dataclass(frozen=True, slots=True)
+class _WorldCheckpoint:
+    memory_ids: frozenset[str]
+    artifacts: tuple[tuple[str, bytes], ...]
+    office_request_count: int
+
 
 @dataclass(slots=True)
 class SimulationWorld:
@@ -166,7 +177,7 @@ class SimulationWorld:
     def memory_snapshot(self) -> tuple[_FrozenDict, ...]:
         """Return every persisted record in stable customer/revision order."""
 
-        with sqlite3.connect(self.database_path) as connection:
+        with closing(sqlite3.connect(self.database_path)) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
@@ -193,6 +204,48 @@ class SimulationWorld:
             )
             for row in rows
         )
+
+    def _checkpoint(self) -> _WorldCheckpoint:
+        directory = self.workspace / "artifacts"
+        artifacts: list[tuple[str, bytes]] = []
+        if directory.exists():
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("simulation artifact directory is unsafe")
+            for path in sorted(directory.rglob("*")):
+                if path.is_symlink():
+                    raise ValueError("simulation artifact directory is unsafe")
+                if path.is_file():
+                    artifacts.append((path.relative_to(directory).as_posix(), path.read_bytes()))
+        return _WorldCheckpoint(
+            memory_ids=frozenset(record["id"] for record in self.memory_snapshot()),
+            artifacts=tuple(artifacts),
+            office_request_count=len(self.office.requests),
+        )
+
+    def _restore(self, checkpoint: _WorldCheckpoint) -> None:
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            rows = connection.execute("SELECT id FROM memory_records").fetchall()
+            connection.executemany(
+                "DELETE FROM memory_records WHERE id = ?",
+                ((row[0],) for row in rows if row[0] not in checkpoint.memory_ids),
+            )
+        directory = self.workspace / "artifacts"
+        expected = dict(checkpoint.artifacts)
+        if directory.exists():
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError("simulation artifact directory is unsafe")
+            for path in sorted(directory.rglob("*"), reverse=True):
+                if path.is_symlink():
+                    raise ValueError("simulation artifact directory is unsafe")
+                if path.is_file() and path.relative_to(directory).as_posix() not in expected:
+                    path.unlink()
+                elif path.is_dir() and not any(path.iterdir()):
+                    path.rmdir()
+        for name, content in checkpoint.artifacts:
+            target = directory / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        self.office._restore_request_count(checkpoint.office_request_count)
 
     def canonical_result(self, result: object) -> Any:
         """Freeze a JSON-compatible result while normalizing this workspace path."""

@@ -2,8 +2,9 @@
 
 import base64
 import json
+import os
 import re
-import sqlite3
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -66,6 +67,9 @@ class _FixtureConnector:
         world: SimulationWorld,
     ) -> None:
         self._records = records
+        self._normalized = {source.external_id: normalized for source, normalized in records}
+        if len(self._normalized) != len(records):
+            raise ConnectorDataError("fixture record ids must be unique")
         self._world = world
 
     def authenticate(self, credentials: ConnectorCredentials | None = None) -> None:
@@ -100,10 +104,10 @@ class _FixtureConnector:
     def normalize(self, record: ConnectorRecord) -> NormalizedRecord:
         """Return the fixture record's schema-validated normalized representation."""
 
-        for source, normalized in self._records:
-            if source.external_id == record.external_id:
-                return normalized
-        raise ConnectorDataError("fixture connector record was not found")
+        try:
+            return self._normalized[record.external_id]
+        except KeyError as error:
+            raise ConnectorDataError("fixture connector record was not found") from error
 
 
 class JourneyRunner:
@@ -128,6 +132,7 @@ class JourneyRunner:
         for index, step in enumerate(scenario.steps, start=1):
             step_id = step.id or f"step-{index}"
             before = initial_snapshot if index == 1 else self._snapshot()
+            checkpoint = self._world._checkpoint()
             try:
                 output, step_updates, step_artifacts = self._dispatch(step)
             except Exception as error:
@@ -155,7 +160,7 @@ class JourneyRunner:
                 continue
 
             if isinstance(step, RunSkillStep) and step.expect_error is not None:
-                self._restore_step(before)
+                self._world._restore(checkpoint)
                 after = self._snapshot()
                 error_message = "expected error was not raised"
                 steps.append(
@@ -316,7 +321,7 @@ class JourneyRunner:
             raise ConnectorDataError("simulation fixtures must be JSON files")
         try:
             document = json.loads(
-                path.read_text(encoding="utf-8"),
+                _read_fixture_bytes(path).decode("utf-8"),
                 object_pairs_hook=_no_duplicate_keys,
                 parse_constant=_reject_non_finite,
             )
@@ -382,31 +387,6 @@ class JourneyRunner:
             )
         return tuple(artifacts)
 
-    def _restore_step(self, before: SimulationSnapshot) -> None:
-        """Remove effects of a successful call that was required to raise an error."""
-
-        known_ids = {record["id"] for record in before.memory}
-        with sqlite3.connect(self._world.database_path) as connection:
-            rows = connection.execute("SELECT id FROM memory_records").fetchall()
-            unexpected_ids = [row[0] for row in rows if row[0] not in known_ids]
-            if unexpected_ids:
-                connection.executemany(
-                    "DELETE FROM memory_records WHERE id = ?",
-                    ((record_id,) for record_id in unexpected_ids),
-                )
-
-        directory = self._world.workspace / "artifacts"
-        known_files = {artifact["filename"] for artifact in before.artifacts}
-        if not directory.exists():
-            return
-        for path in sorted(directory.rglob("*"), reverse=True):
-            if path.is_symlink():
-                raise ValueError("simulation artifact directory is unsafe")
-            if path.is_file() and path.relative_to(directory).as_posix() not in known_files:
-                path.unlink()
-            elif path.is_dir() and not any(path.iterdir()):
-                path.rmdir()
-
     def _canonical_records(self, records: object) -> tuple[dict[str, object], ...]:
         return tuple(_json_value(self._world.canonical_result(record)) for record in records)  # type: ignore[arg-type]
 
@@ -449,6 +429,50 @@ def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError("duplicate JSON object key")
         result[key] = value
     return result
+
+
+def _read_fixture_bytes(path: Path) -> bytes:
+    """Read one regular fixture through a verified descriptor, never a second path open."""
+
+    try:
+        before = os.lstat(path)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise ConnectorDataError("fixture source is not a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+    except ConnectorDataError:
+        raise
+    except OSError as error:
+        raise ConnectorDataError("fixture source is unavailable") from error
+    try:
+        opened = os.fstat(descriptor)
+        after = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not _same_file_identity(before, opened)
+            or not _same_file_identity(opened, after)
+        ):
+            raise ConnectorDataError("fixture source identity changed during read")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            return source.read()
+    except ConnectorDataError:
+        raise
+    except OSError as error:
+        raise ConnectorDataError("fixture source is unavailable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    """Compare the portable device/inode identity supplied by the host filesystem."""
+
+    first_identity = (getattr(first, "st_dev", None), getattr(first, "st_ino", None))
+    second_identity = (getattr(second, "st_dev", None), getattr(second, "st_ino", None))
+    if None in first_identity or None in second_identity:
+        return False
+    return first_identity == second_identity
 
 
 def _reject_non_finite(value: str) -> object:

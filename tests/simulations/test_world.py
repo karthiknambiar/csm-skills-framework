@@ -636,3 +636,17 @@ def test_write_artifacts_rejects_unsafe_artifact_filename_before_writing(tmp_pat
         assert not (tmp_path / "escape.md").exists()
     finally:
         world.close()
+
+
+def test_repeated_snapshots_release_database_for_rename_after_close(tmp_path: Path) -> None:
+    world = SimulationWorld.create(tmp_path / "world", START, 1)
+    database = world.database_path
+    try:
+        for _ in range(10):
+            assert world.memory_snapshot() == ()
+    finally:
+        world.close()
+
+    renamed = tmp_path / "renamed.sqlite3"
+    database.rename(renamed)
+    renamed.unlink()

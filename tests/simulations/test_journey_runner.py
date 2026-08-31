@@ -1,11 +1,14 @@
 """Execution and evidence contracts for deterministic journey simulations."""
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import csaf.simulations.runner as journey_runner_module
+from csaf.connectors.errors import ConnectorDataError
 from csaf.schemas import MemoryKind, MemoryRecordCreate
 from csaf.simulations import JourneyRunner, SimulationScenario, SimulationWorld
 
@@ -363,3 +366,63 @@ def test_expected_error_cannot_match_generic_safe_placeholder(tmp_path: Path) ->
     assert len(result.steps) == 1
     assert result.steps[0].error_type == "SkillNotFoundError"
     assert secret not in result.model_dump_json()
+
+
+def test_mismatched_expected_qbr_error_restores_exact_pre_step_effects(tmp_path: Path) -> None:
+    world = SimulationWorld.create(tmp_path / "world", START, 7)
+    database = world.database_path
+    try:
+        artifacts = world.workspace / "artifacts"
+        artifacts.mkdir()
+        existing = artifacts / "acme-2026-Q1-qbr-v1.pptx"
+        existing.write_bytes(b"original-presentation")
+        before_files = {path.name: path.read_bytes() for path in artifacts.iterdir()}
+        before_requests = world.office.requests
+        result = JourneyRunner(world).run(
+            _scenario(
+                [
+                    {
+                        "type": "run_skill",
+                        "skill": "qbr",
+                        "input": {"customer_id": "acme", "quarter": "2026-Q1"},
+                        "expect_error": "NotTheRaisedError",
+                    }
+                ]
+            )
+        )
+
+        assert result.success is False
+        assert result.steps[0].before == result.steps[0].after
+        assert {path.name: path.read_bytes() for path in artifacts.iterdir()} == before_files
+        assert world.office.requests == before_requests
+        assert result.final_snapshot.memory == ()
+    finally:
+        world.close()
+    renamed = tmp_path / "renamed-after-rollback.sqlite3"
+    database.rename(renamed)
+    renamed.unlink()
+
+
+def test_fixture_reader_rejects_identity_change_without_path_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture, [])
+    original_lstat = os.lstat
+    calls = 0
+
+    def changing_lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        result = original_lstat(path)
+        if calls == 2:
+            values = list(result)
+            values[1] += 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(journey_runner_module.os, "lstat", changing_lstat)
+    with pytest.raises(ConnectorDataError, match="identity") as caught:
+        journey_runner_module._read_fixture_bytes(fixture)
+
+    assert str(fixture) not in str(caught.value)
