@@ -313,6 +313,11 @@ class SimulationScenario(BaseModel):
         step_ids = [step.id for step in self.steps if step.id is not None]
         if len(set(step_ids)) != len(step_ids):
             raise ValueError("step ids must be unique")
+        effective_step_ids = tuple(
+            step.id or f"step-{index}" for index, step in enumerate(self.steps, start=1)
+        )
+        if len(set(effective_step_ids)) != len(effective_step_ids):
+            raise ValueError("effective step ids must be unique")
 
         explicit_step_ids = set(step_ids)
         for expectation in self.expectations:
@@ -343,7 +348,7 @@ class SimulationScenario(BaseModel):
 class SimulationSnapshot(BaseModel):
     """Immutable, JSON-safe state captured around one attempted journey step."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     captured_at: datetime
     memory: tuple[_FrozenJsonObject, ...] = ()
@@ -363,7 +368,7 @@ class SimulationSnapshot(BaseModel):
 class StepResult(BaseModel):
     """Evidence for one attempted scenario step, including its exact state boundary."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     id: NonEmptyString
     type: NonEmptyString
@@ -393,7 +398,7 @@ class StepResult(BaseModel):
 class SimulationRun(BaseModel):
     """Complete deterministic journey evidence, ready for later hard graders."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     scenario_id: NonEmptyString
     seed: StrictInt
@@ -401,6 +406,7 @@ class SimulationRun(BaseModel):
     completed_at: datetime
     success: bool
     steps: tuple[StepResult, ...]
+    initial_snapshot: SimulationSnapshot
     final_snapshot: SimulationSnapshot
     outputs: tuple[_FrozenJsonValue, ...] = ()
     serialized_outputs: tuple[str, ...] = ()

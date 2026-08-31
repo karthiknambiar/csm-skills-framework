@@ -296,3 +296,25 @@ def test_runner_does_not_close_caller_owned_world(tmp_path: Path) -> None:
         assert persisted[0].kind is MemoryKind.RISK
     finally:
         world.close()
+
+
+def test_runner_retains_initial_snapshot_and_redacts_validation_values(tmp_path: Path) -> None:
+    secret = "hunter2-super-private-value"
+    scenario = _scenario(
+        [
+            {
+                "type": "run_skill",
+                "skill": "account-brief",
+                "input": {"customer_id": "acme", "password": secret},
+            }
+        ]
+    )
+    with SimulationWorld.create(tmp_path / "world", START, scenario.seed) as world:
+        result = JourneyRunner(world).run(scenario)
+
+    assert result.initial_snapshot == result.steps[0].before
+    assert result.initial_snapshot.memory == ()
+    dumped = result.model_dump_json()
+    assert secret not in dumped
+    assert "input_value" not in dumped
+    assert "Traceback" not in dumped

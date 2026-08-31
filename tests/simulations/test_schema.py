@@ -27,7 +27,10 @@ from csaf.simulations import (
     RunSkillStep,
     SeedMemoryStep,
     SetFaultStep,
+    SimulationRun,
     SimulationScenario,
+    SimulationSnapshot,
+    StepResult,
 )
 
 
@@ -205,6 +208,17 @@ def test_duplicate_non_null_step_ids_are_rejected_but_missing_ids_may_repeat() -
         {"type": "clear_faults"},
     ]
     assert len(SimulationScenario.model_validate(no_ids).steps) == 2
+
+
+def test_effective_step_ids_must_be_unique() -> None:
+    data = valid_scenario()
+    data["steps"] = [
+        {"id": "step-2", "type": "advance_time", "seconds": 1},
+        {"type": "clear_faults"},
+    ]
+
+    with pytest.raises(ValidationError, match="effective step ids must be unique"):
+        SimulationScenario.model_validate(data)
 
 
 @pytest.mark.parametrize("schema_version", [0, 2, "1", True])
@@ -581,9 +595,7 @@ def test_expectation_step_references_must_resolve(expectation: dict[str, object]
         (
             {
                 "type": "seed_memory",
-                "records": [
-                    {"customer_id": "other", "kind": "profile", "content": "Other"}
-                ],
+                "records": [{"customer_id": "other", "kind": "profile", "content": "Other"}],
             },
             None,
         ),
@@ -653,9 +665,7 @@ def test_numeric_dsl_fields_reject_coercion(target: str, invalid: object) -> Non
         ]
         data["expectations"] = [{"type": "no_cross_customer_data"}]
     elif target == "memory_count":
-        data["expectations"] = [
-            {"type": "memory_count", "customer_id": "acme", "count": invalid}
-        ]
+        data["expectations"] = [{"type": "memory_count", "customer_id": "acme", "count": invalid}]
     elif target == "revision":
         data["expectations"] = [
             {
@@ -718,6 +728,38 @@ def test_scenario_is_frozen_and_json_round_trips_without_warnings() -> None:
     assert restored.model_dump(mode="json") == dumped
     with pytest.raises(ValidationError):
         scenario.title = "Changed"
+
+
+def test_simulation_evidence_models_are_strict_and_json_round_trip() -> None:
+    snapshot = SimulationSnapshot(captured_at=datetime(2026, 8, 31, 1, 30, tzinfo=UTC))
+    step = StepResult(
+        id="step-1",
+        type="advance_time",
+        success=True,
+        started_at=snapshot.captured_at,
+        completed_at=snapshot.captured_at,
+        before=snapshot,
+        after=snapshot,
+    )
+    run = SimulationRun(
+        scenario_id="strict-evidence",
+        seed=1,
+        started_at=snapshot.captured_at,
+        completed_at=snapshot.captured_at,
+        success=True,
+        steps=(step,),
+        initial_snapshot=snapshot,
+        final_snapshot=snapshot,
+    )
+
+    with pytest.raises(ValidationError):
+        SimulationSnapshot.model_validate({"captured_at": snapshot.captured_at.isoformat()})
+    with pytest.raises(ValidationError):
+        StepResult.model_validate({**step.model_dump(), "success": "yes"})
+    with pytest.raises(ValidationError):
+        SimulationRun.model_validate({**run.model_dump(), "success": "no"})
+
+    assert SimulationRun.model_validate_json(run.model_dump_json()) == run
 
 
 def test_json_schema_preserves_discriminators_strict_shape_and_bounds() -> None:

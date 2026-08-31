@@ -32,6 +32,7 @@ from csaf.simulations.schema import (
     StepResult,
 )
 from csaf.simulations.world import SimulationWorld
+from csaf.skills.errors import SkillError, SkillExecutionError
 from csaf.skills.types import Artifact
 
 _FIXTURE_FIELDS = frozenset(
@@ -115,10 +116,11 @@ class JourneyRunner:
         updates: list[dict[str, object]] = []
         artifacts: list[dict[str, object]] = []
         succeeded = True
+        initial_snapshot = self._snapshot()
 
         for index, step in enumerate(scenario.steps, start=1):
             step_id = step.id or f"step-{index}"
-            before = self._snapshot()
+            before = initial_snapshot if index == 1 else self._snapshot()
             try:
                 output, step_updates, step_artifacts = self._dispatch(step)
             except Exception as error:
@@ -198,6 +200,7 @@ class JourneyRunner:
             completed_at=self._world.clock.now(),
             success=succeeded,
             steps=tuple(steps),
+            initial_snapshot=initial_snapshot,
             final_snapshot=final_snapshot,
             outputs=tuple(outputs),
             serialized_outputs=tuple(serialized_outputs),
@@ -415,9 +418,20 @@ class JourneyRunner:
         )
 
     def _error_details(self, error: Exception) -> tuple[str, str]:
-        error_type = "ConnectorError" if isinstance(error, ConnectorError) else type(error).__name__
-        message = _sanitize_error(str(error), self._world.workspace, self._fixture_root)
-        return error_type, message or "simulation step failed"
+        if isinstance(error, ValidationError):
+            return "ValidationError", _validation_error_summary(error)
+        if isinstance(error, ConnectorError):
+            message = _sanitize_error(str(error), self._world.workspace, self._fixture_root)
+            if message in {"simulated connector timeout", "simulated connector rate limit"}:
+                return "ConnectorError", message
+            return "ConnectorError", "connector operation failed"
+        if isinstance(error, SkillExecutionError) and str(error).startswith(
+            "QBR artifact rendering failed"
+        ):
+            return "SkillExecutionError", "QBR artifact rendering failed"
+        if isinstance(error, SkillError):
+            return type(error).__name__, "skill operation failed"
+        return "UnexpectedError", "operation failed"
 
 
 def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -443,6 +457,18 @@ def _canonical_json(value: object) -> str:
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False
     )
+
+
+def _validation_error_summary(error: ValidationError) -> str:
+    """Return only stable validation categories, never rejected values or contexts."""
+
+    error_types = sorted(
+        {
+            str(item["type"])
+            for item in error.errors(include_url=False, include_context=False, include_input=False)
+        }
+    )
+    return f"validation failed: {', '.join(error_types) or 'invalid input'}"
 
 
 def _json_value(value: object) -> object:
