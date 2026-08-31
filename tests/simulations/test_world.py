@@ -188,10 +188,12 @@ def test_world_creates_resolved_workspace_and_stable_database(tmp_path: Path) ->
 def test_world_rejects_naive_start_and_workspace_file(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="timezone"):
         SimulationWorld.create(tmp_path / "naive", datetime(2026, 1, 1), 1)
-    workspace_file = tmp_path / "file"
+    workspace_file = tmp_path / "secret-workspace-file"
     workspace_file.write_text("not a directory", encoding="utf-8")
-    with pytest.raises(NotADirectoryError):
+    with pytest.raises(NotADirectoryError, match="workspace.*not a directory") as caught:
         SimulationWorld.create(workspace_file, START, 1)
+    _assert_exception_hides_path(caught.value, workspace_file)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
 
 def test_world_rejects_reusing_a_workspace_database_without_leaking_state(
@@ -528,13 +530,95 @@ def test_write_artifacts_rejects_lexical_parent_traversal_inside_workspace(
     tmp_path: Path,
     directory: Path,
 ) -> None:
-    world = SimulationWorld.create(tmp_path / "world", START, 1)
+    world = SimulationWorld.create(tmp_path / "secret-artifact-world", START, 1)
     try:
         result = SkillRunResult.model_construct(artifacts=())
-        with pytest.raises(ValueError, match="traversal"):
+        with pytest.raises(ValueError, match="traversal") as caught:
             world.write_artifacts(result, directory)
+        _assert_exception_hides_path(caught.value, world.workspace)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
     finally:
         world.close()
+
+
+@pytest.mark.parametrize("stage", ["directory", "filename"])
+def test_write_artifacts_sanitizes_resolved_containment_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    with SimulationWorld.create(tmp_path / "secret-containment-world", START, 1) as world:
+        target_directory = world.workspace / "artifacts"
+        target = target_directory if stage == "directory" else target_directory / "brief.md"
+        outside = tmp_path / "outside" / target.name
+        artifact = Artifact(
+            type=ArtifactType.MARKDOWN,
+            filename="brief.md",
+            media_type="text/markdown",
+            content=b"stable",
+        )
+        original_resolve = Path.resolve
+
+        def resolve(candidate: Path, *args: object, **kwargs: object) -> Path:
+            if candidate == target:
+                return outside
+            return original_resolve(candidate, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "resolve", resolve)
+            with pytest.raises(ValueError, match=f"artifact {stage}.*beneath") as caught:
+                world.write_artifacts((artifact,))
+
+        _assert_exception_hides_path(caught.value, world.workspace)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_write_artifacts_sanitizes_directory_symlink_containment_error(
+    tmp_path: Path,
+) -> None:
+    with SimulationWorld.create(tmp_path / "secret-directory-link-world", START, 1) as world:
+        outside = tmp_path / "outside-directory"
+        outside.mkdir()
+        link = world.workspace / "linked-artifacts"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            pytest.skip(f"directory symlinks unavailable: {error}")
+
+        with pytest.raises(ValueError, match="artifact directory.*beneath") as caught:
+            world.write_artifacts((), Path("linked-artifacts"))
+
+        _assert_exception_hides_path(caught.value, world.workspace)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+        assert not tuple(outside.iterdir())
+
+
+def test_write_artifacts_sanitizes_filename_symlink_containment_error(
+    tmp_path: Path,
+) -> None:
+    with SimulationWorld.create(tmp_path / "secret-filename-link-world", START, 1) as world:
+        artifact_directory = world.workspace / "artifacts"
+        artifact_directory.mkdir()
+        outside = tmp_path / "outside.md"
+        outside.write_bytes(b"unchanged")
+        link = artifact_directory / "brief.md"
+        try:
+            link.symlink_to(outside)
+        except OSError as error:
+            pytest.skip(f"file symlinks unavailable: {error}")
+        artifact = Artifact(
+            type=ArtifactType.MARKDOWN,
+            filename="brief.md",
+            media_type="text/markdown",
+            content=b"replacement",
+        )
+
+        with pytest.raises(ValueError, match="artifact filename.*beneath") as caught:
+            world.write_artifacts((artifact,))
+
+        _assert_exception_hides_path(caught.value, world.workspace)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+        assert outside.read_bytes() == b"unchanged"
 
 
 def test_write_artifacts_rejects_unsafe_artifact_filename_before_writing(tmp_path: Path) -> None:

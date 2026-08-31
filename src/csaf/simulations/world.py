@@ -125,7 +125,7 @@ class SimulationWorld:
             raise TypeError("seed must be an integer")
         resolved_workspace = Path(workspace).resolve()
         if resolved_workspace.exists() and not resolved_workspace.is_dir():
-            raise NotADirectoryError(f"simulation workspace is not a directory: {workspace}")
+            raise NotADirectoryError("simulation workspace is not a directory") from None
         resolved_workspace.mkdir(parents=True, exist_ok=True)
         database_path = resolved_workspace / _DATABASE_FILENAME
         database_identity = _reserve_database(database_path, resolved_workspace)
@@ -216,10 +216,8 @@ class SimulationWorld:
         if ".." in str(directory).replace("\\", "/").split("/"):
             raise ValueError("relative artifact directory must not contain parent traversal")
         target_directory = (self.workspace / relative_directory).resolve()
-        try:
-            target_directory.relative_to(self.workspace)
-        except ValueError as error:
-            raise ValueError("artifact directory must remain beneath the workspace") from error
+        if not _is_beneath(target_directory, self.workspace):
+            raise ValueError("artifact directory must remain beneath the workspace") from None
 
         artifacts = _artifact_sequence(result)
         targets: list[tuple[Path, bytes]] = []
@@ -232,10 +230,8 @@ class SimulationWorld:
             ):
                 raise ValueError("artifact filename must be a safe basename")
             target = (target_directory / filename).resolve()
-            try:
-                target.relative_to(self.workspace)
-            except ValueError as error:
-                raise ValueError("artifact filename must remain beneath the workspace") from error
+            if not _is_beneath(target, self.workspace):
+                raise ValueError("artifact filename must remain beneath the workspace") from None
             targets.append((target, bytes(artifact.content)))
 
         target_directory.mkdir(parents=True, exist_ok=True)
@@ -261,6 +257,14 @@ class SimulationWorld:
 def _require_aware(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must include a timezone")
+
+
+def _is_beneath(candidate: Path, workspace: Path) -> bool:
+    try:
+        candidate.relative_to(workspace)
+    except ValueError:
+        return False
+    return True
 
 
 def _reserve_database(database_path: Path, workspace: Path) -> tuple[int, int]:
