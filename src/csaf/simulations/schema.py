@@ -67,7 +67,7 @@ _FrozenJsonObject = Annotated[
 ]
 
 
-class SimulationMemoryRecordCreate(MemoryRecordCreate):
+class _SimulationMemoryRecordCreate(MemoryRecordCreate):
     """Immutable simulation fixture compatible with domain memory inputs."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
@@ -82,20 +82,18 @@ class SeedMemoryStep(BaseModel):
 
     id: NonEmptyString | None = None
     type: Literal["seed_memory"]
-    records: tuple[SimulationMemoryRecordCreate, ...]
+    records: tuple[MemoryRecordCreate, ...]
 
-    @field_validator("records", mode="before")
+    @field_validator("records", mode="after")
     @classmethod
-    def copy_domain_records(cls, value: object) -> object:
+    def freeze_domain_records(
+        cls, value: tuple[MemoryRecordCreate, ...]
+    ) -> tuple[MemoryRecordCreate, ...]:
         """Convert mutable domain record instances into frozen simulation copies."""
 
-        if not isinstance(value, list | tuple):
-            return value
         fields = set(MemoryRecordCreate.model_fields)
         return tuple(
-            record.model_dump(include=fields)
-            if isinstance(record, MemoryRecordCreate)
-            else record
+            _SimulationMemoryRecordCreate.model_validate(record.model_dump(include=fields))
             for record in value
         )
 

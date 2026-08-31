@@ -3,10 +3,12 @@
 import json
 import warnings
 from copy import deepcopy
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
 
+import csaf.simulations as simulations
 from csaf.schemas import MemoryRecordCreate
 from csaf.simulations import (
     AdvanceTimeStep,
@@ -464,6 +466,18 @@ def test_seed_step_copies_domain_memory_records_into_frozen_records() -> None:
         step.records[0].content = "Changed"
 
 
+def test_seed_memory_public_contract_remains_domain_record_type() -> None:
+    annotation = get_type_hints(SeedMemoryStep)["records"]
+    schema = SeedMemoryStep.model_json_schema(mode="validation")
+
+    assert annotation == tuple[MemoryRecordCreate, ...]
+    assert schema["properties"]["records"]["items"]["$ref"] == "#/$defs/MemoryRecordCreate"
+    assert "MemoryRecordCreate" in schema["$defs"]
+    assert "SimulationMemoryRecordCreate" not in schema["$defs"]
+    assert "SimulationMemoryRecordCreate" not in simulations.__all__
+    assert not hasattr(simulations, "SimulationMemoryRecordCreate")
+
+
 @pytest.mark.parametrize(
     "expectation",
     [
@@ -662,7 +676,7 @@ def test_json_schema_preserves_discriminators_strict_shape_and_bounds() -> None:
         assert definitions[name.removeprefix("#/$defs/")]["additionalProperties"] is False
     for name in expectation_items["discriminator"]["mapping"].values():
         assert definitions[name.removeprefix("#/$defs/")]["additionalProperties"] is False
-    assert definitions["SimulationMemoryRecordCreate"]["additionalProperties"] is False
+    assert definitions["MemoryRecordCreate"]["additionalProperties"] is False
     assert set(definitions["RunSkillStep"]["required"]) == {"type", "skill", "input"}
     assert set(definitions["OutputEqualsExpectation"]["required"]) == {
         "type",
@@ -670,7 +684,7 @@ def test_json_schema_preserves_discriminators_strict_shape_and_bounds() -> None:
         "value",
     }
     assert {"customer_id", "kind", "content"}.issubset(
-        definitions["SimulationMemoryRecordCreate"]["required"]
+        definitions["MemoryRecordCreate"]["required"]
     )
 
     seconds = definitions["AdvanceTimeStep"]["properties"]["seconds"]
