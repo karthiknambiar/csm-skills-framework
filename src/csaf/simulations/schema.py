@@ -1,5 +1,6 @@
 """Strict, versioned contracts for deterministic simulation scenarios."""
 
+from math import isfinite
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -10,6 +11,7 @@ from pydantic import (
     JsonValue,
     PlainSerializer,
     StrictInt,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -25,6 +27,13 @@ class _FrozenJsonDict(dict[str, object]):
     def _reject_mutation(self, *_: object, **__: object) -> None:
         raise TypeError("simulation JSON values are immutable")
 
+    def __copy__(self) -> "_FrozenJsonDict":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "_FrozenJsonDict":
+        memo[id(self)] = self
+        return self
+
     __setitem__ = _reject_mutation
     __delitem__ = _reject_mutation
     __ior__ = _reject_mutation
@@ -38,6 +47,8 @@ class _FrozenJsonDict(dict[str, object]):
 def _freeze_json(value: object) -> object:
     """Recursively freeze validated JSON containers."""
 
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("JSON floats must be finite")
     if isinstance(value, dict):
         return _FrozenJsonDict({key: _freeze_json(item) for key, item in value.items()})
     if isinstance(value, list | tuple):
@@ -96,6 +107,14 @@ class SeedMemoryStep(BaseModel):
             _SimulationMemoryRecordCreate.model_validate(record.model_dump(include=fields))
             for record in value
         )
+
+    @field_serializer("records", when_used="json")
+    def serialize_records(
+        self, records: tuple[MemoryRecordCreate, ...]
+    ) -> tuple[dict[str, object], ...]:
+        """Serialize private frozen records through ordinary JSON payloads."""
+
+        return tuple(record.model_dump(mode="json") for record in records)
 
 
 class RunSkillStep(BaseModel):

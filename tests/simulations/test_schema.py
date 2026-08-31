@@ -2,7 +2,7 @@
 
 import json
 import warnings
-from copy import deepcopy
+from copy import copy, deepcopy
 from typing import get_type_hints
 
 import pytest
@@ -476,6 +476,76 @@ def test_seed_memory_public_contract_remains_domain_record_type() -> None:
     assert "SimulationMemoryRecordCreate" not in schema["$defs"]
     assert "SimulationMemoryRecordCreate" not in simulations.__all__
     assert not hasattr(simulations, "SimulationMemoryRecordCreate")
+
+
+def test_standard_json_serialization_is_warning_free_and_round_trips() -> None:
+    data = valid_scenario()
+    data["steps"][0]["records"][0]["metadata"] = {
+        "labels": ["enterprise"],
+        "details": {"score": 1.25},
+    }
+    scenario = SimulationScenario.model_validate(data)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        encoded = scenario.model_dump_json()
+    restored = SimulationScenario.model_validate_json(encoded)
+
+    assert restored == scenario
+
+
+def test_deep_model_copy_reuses_only_recursively_immutable_json_containers() -> None:
+    data = valid_scenario()
+    data["steps"][1]["input"] = {
+        "customer_id": "acme",
+        "nested": {"values": [1, 2]},
+    }
+    scenario = SimulationScenario.model_validate(data)
+
+    copied = scenario.model_copy(deep=True)
+    original_step = scenario.steps[1]
+    copied_step = copied.steps[1]
+    assert isinstance(original_step, RunSkillStep)
+    assert isinstance(copied_step, RunSkillStep)
+
+    assert copied == scenario
+    assert copied is not scenario
+    assert copy(original_step.input) is original_step.input
+    assert deepcopy(original_step.input) is original_step.input
+    assert copied_step.input is original_step.input
+    with pytest.raises(TypeError):
+        copied_step.input["new"] = True
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("location", ["input", "expectation", "metadata"])
+def test_nested_json_rejects_non_finite_floats(location: str, non_finite: float) -> None:
+    data = valid_scenario()
+    if location == "input":
+        data["steps"][1]["input"] = {
+            "customer_id": "acme",
+            "nested": {"values": [non_finite]},
+        }
+    elif location == "expectation":
+        data["expectations"][0]["value"] = {"nested": [non_finite]}
+    else:
+        data["steps"][0]["records"][0]["metadata"] = {"nested": [non_finite]}
+
+    with pytest.raises(ValidationError, match="JSON floats must be finite"):
+        SimulationScenario.model_validate(data)
+
+
+def test_finite_floats_round_trip_losslessly_at_every_json_boundary() -> None:
+    data = valid_scenario()
+    data["steps"][0]["records"][0]["metadata"] = {"score": 1.25}
+    data["steps"][1]["input"] = {"customer_id": "acme", "score": 2.5}
+    data["expectations"][0]["value"] = {"score": 3.75}
+    scenario = SimulationScenario.model_validate(data)
+
+    restored = SimulationScenario.model_validate_json(scenario.model_dump_json())
+
+    assert restored == scenario
+    assert restored.model_dump(mode="json") == scenario.model_dump(mode="json")
 
 
 @pytest.mark.parametrize(
