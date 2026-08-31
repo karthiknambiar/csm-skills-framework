@@ -9,6 +9,36 @@ from pydantic import ValidationError
 
 from csaf.simulations.schema import IngestFixtureStep, SimulationScenario
 
+_SAFE_VALIDATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "id",
+        "title",
+        "seed",
+        "customers",
+        "steps",
+        "expectations",
+        "type",
+        "records",
+        "skill",
+        "input",
+        "expect_error",
+        "seconds",
+        "fault",
+        "remaining_calls",
+        "customer_id",
+        "fixture",
+        "step_id",
+        "path",
+        "value",
+        "term",
+        "count",
+        "logical_key",
+        "revision",
+        "values",
+    }
+)
+
 
 class SimulationDatasetError(ValueError):
     """A simulation dataset could not be loaded safely and completely."""
@@ -58,12 +88,25 @@ def _discover_sources(path: Path) -> tuple[Path, ...]:
     raise _dataset_error(path, "unsupported dataset input", cause) from cause
 
 
+def _sanitize_validation_location_component(component: object) -> str:
+    """Render only known schema fields and numeric collection indices."""
+
+    if type(component) is int:
+        return str(component)
+    if isinstance(component, str) and component in _SAFE_VALIDATION_FIELDS:
+        return component
+    return "<field>"
+
+
 def _validation_summary(error: ValidationError) -> str:
     """Summarize validation failures without echoing source payload values."""
 
     details: list[str] = []
     for item in error.errors(include_url=False, include_input=False):
-        location = ".".join(str(part) for part in item["loc"]) or "scenario"
+        location = ".".join(
+            _sanitize_validation_location_component(part)
+            for part in item["loc"]
+        ) or "scenario"
         details.append(f"{location}: {item['type']}")
     return "; ".join(details)
 

@@ -237,6 +237,21 @@ def test_schema_validation_error_does_not_leak_invalid_discriminator(tmp_path: P
     assert type(caught.value.__cause__) is ValueError
 
 
+def test_schema_validation_error_sanitizes_user_controlled_location(tmp_path: Path) -> None:
+    source = tmp_path / "invalid-extra-field.json"
+    secret_field = "secret-field-name-do-not-leak"
+    payload = scenario_payload()
+    payload[secret_field] = True
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SimulationDatasetError) as caught:
+        load_scenarios(source)
+
+    assert "<field>: extra_forbidden" in str(caught.value)
+    assert_traceback_and_cause_chain_hide(caught.value, secret_field)
+    assert type(caught.value.__cause__) is ValueError
+
+
 def test_rejects_duplicate_ids_across_files(tmp_path: Path) -> None:
     first = tmp_path / "a.json"
     duplicate = tmp_path / "b.json"
