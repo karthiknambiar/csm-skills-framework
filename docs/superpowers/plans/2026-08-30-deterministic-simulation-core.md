@@ -433,7 +433,7 @@ git commit -m "feat(simulations): isolate journey runtime"
 
 **Files:**
 - Create: `src/csaf/simulations/runner.py`
-- Test: `tests/simulations/test_runner.py`
+- Test: `tests/simulations/test_journey_runner.py`
 
 - [ ] **Step 1: Write failing journey test**
 
@@ -479,7 +479,7 @@ def test_runner_captures_every_step_and_expected_error(world: SimulationWorld) -
 
 - [ ] **Step 2: Run test and verify RED**
 
-Run: `python -m pytest tests/simulations/test_runner.py -v`
+Run: `python -m pytest tests/simulations/test_journey_runner.py -v`
 
 Expected: FAIL because runner is missing.
 
@@ -494,14 +494,14 @@ scenario fixture root; connector faults raise `ConnectorError` before any page a
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `python -m pytest tests/simulations/test_runner.py tests/connectors -v`
+Run: `python -m pytest tests/simulations/test_journey_runner.py tests/connectors -v`
 
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/csaf/simulations tests/simulations/test_runner.py
+git add src/csaf/simulations tests/simulations/test_journey_runner.py
 git commit -m "feat(simulations): execute journey steps"
 ```
 

@@ -39,6 +39,13 @@ _FIXTURE_FIELDS = frozenset(
     {"id", "kind", "content", "logical_key", "metadata", "occurred_at", "confidence"}
 )
 _SECRET_PATTERN = re.compile(r"\b(?:sk|pk|api)[-_][A-Za-z0-9_-]{8,}\b", re.IGNORECASE)
+_MATCHABLE_ERROR_MESSAGES = frozenset(
+    {
+        "QBR artifact rendering failed",
+        "simulated connector rate limit",
+        "simulated connector timeout",
+    }
+)
 
 
 class _FixtureConnector:
@@ -413,25 +420,24 @@ class JourneyRunner:
         expected = step.expect_error if isinstance(step, RunSkillStep) else None
         return expected is not None and (
             expected == error_type
-            or expected == error_message
-            or error_message.startswith(f"{expected}:")
+            or (error_message in _MATCHABLE_ERROR_MESSAGES and expected == error_message)
         )
 
     def _error_details(self, error: Exception) -> tuple[str, str]:
         if isinstance(error, ValidationError):
-            return "ValidationError", _validation_error_summary(error)
+            return type(error).__name__, _validation_error_summary(error)
         if isinstance(error, ConnectorError):
             message = _sanitize_error(str(error), self._world.workspace, self._fixture_root)
             if message in {"simulated connector timeout", "simulated connector rate limit"}:
-                return "ConnectorError", message
-            return "ConnectorError", "connector operation failed"
+                return type(error).__name__, message
+            return type(error).__name__, "connector operation failed"
         if isinstance(error, SkillExecutionError) and str(error).startswith(
             "QBR artifact rendering failed"
         ):
-            return "SkillExecutionError", "QBR artifact rendering failed"
+            return type(error).__name__, "QBR artifact rendering failed"
         if isinstance(error, SkillError):
             return type(error).__name__, "skill operation failed"
-        return "UnexpectedError", "operation failed"
+        return type(error).__name__, "operation failed"
 
 
 def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -318,3 +318,48 @@ def test_runner_retains_initial_snapshot_and_redacts_validation_values(tmp_path:
     assert secret not in dumped
     assert "input_value" not in dumped
     assert "Traceback" not in dumped
+
+
+def test_expected_runtime_error_from_artifact_fault_continues(tmp_path: Path) -> None:
+    scenario = _scenario(
+        [
+            {"type": "set_fault", "fault": "artifact_commit_failure"},
+            {
+                "type": "run_skill",
+                "skill": "qbr",
+                "input": {"customer_id": "acme", "quarter": "2026-Q1"},
+                "expect_error": "RuntimeError",
+            },
+            {"type": "seed_memory", "records": [_record()]},
+        ]
+    )
+    with SimulationWorld.create(tmp_path / "world", START, scenario.seed) as world:
+        result = JourneyRunner(world).run(scenario)
+
+    assert result.success is True
+    assert result.steps[1].success is True
+    assert result.steps[1].expected_error is True
+    assert result.steps[1].error_type == "RuntimeError"
+    assert len(result.steps) == 3
+
+
+def test_expected_error_cannot_match_generic_safe_placeholder(tmp_path: Path) -> None:
+    secret = "sk-" "proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+    scenario = _scenario(
+        [
+            {
+                "type": "run_skill",
+                "skill": "missing-skill",
+                "input": {"customer_id": "acme", "token": secret},
+                "expect_error": "skill operation failed",
+            },
+            {"type": "seed_memory", "records": [_record("must not run")]},
+        ]
+    )
+    with SimulationWorld.create(tmp_path / "world", START, scenario.seed) as world:
+        result = JourneyRunner(world).run(scenario)
+
+    assert result.success is False
+    assert len(result.steps) == 1
+    assert result.steps[0].error_type == "SkillNotFoundError"
+    assert secret not in result.model_dump_json()
