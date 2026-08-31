@@ -426,3 +426,68 @@ def test_fixture_reader_rejects_identity_change_without_path_disclosure(
         journey_runner_module._read_fixture_bytes(fixture)
 
     assert str(fixture) not in str(caught.value)
+
+
+def test_mismatched_expected_error_restores_deterministic_id_sequence(tmp_path: Path) -> None:
+    mismatch = _scenario(
+        [
+            {
+                "type": "run_skill",
+                "skill": "account-brief",
+                "input": {"customer_id": "acme"},
+                "expect_error": "NotTheRaisedError",
+            }
+        ],
+        seed=23,
+    )
+    normal = _scenario(
+        [
+            {
+                "type": "run_skill",
+                "skill": "account-brief",
+                "input": {"customer_id": "acme"},
+            }
+        ],
+        seed=23,
+    )
+    with SimulationWorld.create(tmp_path / "reused", START, 23) as reused:
+        assert JourneyRunner(reused).run(mismatch).success is False
+        resumed = JourneyRunner(reused).run(normal)
+    with SimulationWorld.create(tmp_path / "fresh", START, 23) as fresh:
+        baseline = JourneyRunner(fresh).run(normal)
+
+    assert resumed == baseline
+
+
+def test_committed_expected_error_does_not_rewind_deterministic_id_sequence(
+    tmp_path: Path,
+) -> None:
+    expected_failure = _scenario(
+        [
+            {"type": "set_fault", "fault": "artifact_commit_failure"},
+            {
+                "type": "run_skill",
+                "skill": "qbr",
+                "input": {"customer_id": "acme", "quarter": "2026-Q1"},
+                "expect_error": "RuntimeError",
+            },
+        ],
+        seed=29,
+    )
+    with SimulationWorld.create(tmp_path / "reused", START, 29) as reused:
+        assert JourneyRunner(reused).run(expected_failure).success is True
+        resumed = reused.runtime.runner.run("account-brief", {"customer_id": "acme"})
+    with SimulationWorld.create(tmp_path / "fresh", START, 29) as fresh:
+
+        def fail_artifact(_: object) -> None:
+            raise RuntimeError("simulated artifact commit failure")
+
+        with pytest.raises(RuntimeError, match="simulated artifact commit failure"):
+            fresh.runtime.runner.run(
+                "qbr",
+                {"customer_id": "acme", "quarter": "2026-Q1"},
+                artifact_handler=fail_artifact,
+            )
+        baseline = fresh.runtime.runner.run("account-brief", {"customer_id": "acme"})
+
+    assert resumed.execution_id == baseline.execution_id

@@ -113,6 +113,20 @@ class _WorldCheckpoint:
     memory_ids: frozenset[str]
     artifacts: tuple[tuple[str, bytes], ...]
     office_request_count: int
+    id_counter: int
+
+
+@dataclass(slots=True)
+class _DeterministicIdFactory:
+    """Generate deterministic UUIDs while exposing checkpointable state."""
+
+    seed: int
+    counter: int = 0
+
+    def __call__(self) -> UUID:
+        result = uuid5(NAMESPACE_URL, f"{self.seed}:{self.counter}")
+        self.counter += 1
+        return result
 
 
 @dataclass(slots=True)
@@ -125,6 +139,7 @@ class SimulationWorld:
     clock: MutableClock
     faults: FaultRegistry
     office: SimulationOfficeRenderer
+    _id_factory: _DeterministicIdFactory
     _closed: bool = False
 
     @classmethod
@@ -143,7 +158,7 @@ class SimulationWorld:
         clock = MutableClock(start)
         faults = FaultRegistry()
         office = SimulationOfficeRenderer(faults)
-        id_factory = _uuid_factory(seed)
+        id_factory = _DeterministicIdFactory(seed)
         runtime_failed = False
         try:
             runtime = create_runtime(
@@ -167,6 +182,7 @@ class SimulationWorld:
             clock=clock,
             faults=faults,
             office=office,
+            _id_factory=id_factory,
         )
 
     def seed(self, records: Sequence[MemoryRecordCreate]) -> tuple[MemoryRecord, ...]:
@@ -220,6 +236,7 @@ class SimulationWorld:
             memory_ids=frozenset(record["id"] for record in self.memory_snapshot()),
             artifacts=tuple(artifacts),
             office_request_count=len(self.office.requests),
+            id_counter=self._id_factory.counter,
         )
 
     def _restore(self, checkpoint: _WorldCheckpoint) -> None:
@@ -246,6 +263,7 @@ class SimulationWorld:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
         self.office._restore_request_count(checkpoint.office_request_count)
+        self._id_factory.counter = checkpoint.id_counter
 
     def canonical_result(self, result: object) -> Any:
         """Freeze a JSON-compatible result while normalizing this workspace path."""
@@ -368,18 +386,6 @@ def _remove_reserved_database(database_path: Path, identity: tuple[int, int]) ->
         return
     if stat.S_ISREG(details.st_mode) and (details.st_dev, details.st_ino) == identity:
         database_path.unlink()
-
-
-def _uuid_factory(seed: int):
-    counter = 0
-
-    def create_id() -> UUID:
-        nonlocal counter
-        result = uuid5(NAMESPACE_URL, f"{seed}:{counter}")
-        counter += 1
-        return result
-
-    return create_id
 
 
 def _artifact_sequence(value: object) -> tuple[Artifact, ...]:
