@@ -351,6 +351,45 @@ def test_canonical_result_normalizes_only_quoted_workspace_path_spans(
         second.close()
 
 
+def test_canonical_result_normalizes_adjacent_unquoted_workspace_paths(
+    tmp_path: Path,
+) -> None:
+    first = SimulationWorld.create(tmp_path / "first", START, 1)
+    second = SimulationWorld.create(tmp_path / "second", START, 1)
+    try:
+        first_paths = (
+            str(first.workspace / "QBR One" / "first.docx"),
+            str(first.workspace / "QBR Two" / "second.docx").replace(chr(92), "/"),
+            str(first.workspace / "QBR Three" / "third.docx"),
+        )
+        second_paths = (
+            str(second.workspace / "QBR One" / "first.docx").replace(chr(92), "/"),
+            str(second.workspace / "QBR Two" / "second.docx"),
+            str(second.workspace / "QBR Three" / "third.docx").replace(chr(92), "/"),
+        )
+        first_message = (
+            rf"before\raw {first_paths[0]} {first_paths[1]}; "
+            rf"bridge\raw; {first_paths[2]}; after\raw"
+        )
+        second_message = (
+            rf"before\raw {second_paths[0]} {second_paths[1]}; "
+            rf"bridge\raw; {second_paths[2]}; after\raw"
+        )
+
+        first_result = first.canonical_result({"message": first_message})
+        second_result = second.canonical_result({"message": second_message})
+
+        assert first_result == second_result
+        assert first_result["message"] == (
+            r"before\raw <workspace>/QBR One/first.docx "
+            r"<workspace>/QBR Two/second.docx; bridge\raw; "
+            r"<workspace>/QBR Three/third.docx; after\raw"
+        )
+    finally:
+        first.close()
+        second.close()
+
+
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
     world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:

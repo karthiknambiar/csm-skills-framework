@@ -299,10 +299,12 @@ def _normalize_workspace_path(value: str, workspace: Path) -> str:
     )
     parts: list[str] = []
     cursor = 0
-    for match in pattern.finditer(value):
+    matches = tuple(pattern.finditer(value))
+    for index, match in enumerate(matches):
         if match.start() < cursor:
             continue
-        path_end = _workspace_path_end(value, match.start(), match.end())
+        next_prefix = matches[index + 1].start() if index + 1 < len(matches) else None
+        path_end = _workspace_path_end(value, match.start(), match.end(), next_prefix=next_prefix)
         parts.append(value[cursor : match.start()])
         suffix = value[match.end() : path_end].replace("\\", "/")
         parts.append(f"{_WORKSPACE_MARKER}{suffix}")
@@ -313,17 +315,24 @@ def _normalize_workspace_path(value: str, workspace: Path) -> str:
     return "".join(parts)
 
 
-def _workspace_path_end(value: str, start: int, prefix_end: int) -> int:
+def _workspace_path_end(
+    value: str,
+    start: int,
+    prefix_end: int,
+    *,
+    next_prefix: int | None,
+) -> int:
+    limit = next_prefix if next_prefix is not None else len(value)
     quote = value[start - 1] if start > 0 and value[start - 1] in {'"', "'"} else None
     if quote is not None:
-        closing_quote = value.find(quote, prefix_end)
-        return closing_quote if closing_quote >= 0 else len(value)
+        closing_quote = value.find(quote, prefix_end, limit)
+        return closing_quote if closing_quote >= 0 else limit
     if prefix_end == len(value) or value[prefix_end] not in "\\/":
         return prefix_end
-    for index in range(prefix_end, len(value)):
+    for index in range(prefix_end, limit):
         if value[index] in ";,\r\n)]}\"'":
             return index
-    return len(value)
+    return limit
 
 
 def _freeze(value: object) -> Any:
