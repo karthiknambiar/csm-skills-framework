@@ -1,5 +1,6 @@
 """Strict, versioned contracts for deterministic simulation scenarios."""
 
+from datetime import datetime
 from math import isfinite
 from typing import Annotated, Literal
 
@@ -337,3 +338,81 @@ class SimulationScenario(BaseModel):
                 if expectation.customer_id not in customer_ids:
                     raise ValueError("customer_id must belong to scenario customers")
         return self
+
+
+class SimulationSnapshot(BaseModel):
+    """Immutable, JSON-safe state captured around one attempted journey step."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    captured_at: datetime
+    memory: tuple[_FrozenJsonObject, ...] = ()
+    artifacts: tuple[_FrozenJsonObject, ...] = ()
+    office_requests: tuple[_FrozenJsonObject, ...] = ()
+
+    @field_validator("captured_at")
+    @classmethod
+    def require_aware_timestamp(cls, value: datetime) -> datetime:
+        """Keep replay evidence explicit about its timezone."""
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("captured_at must include a timezone")
+        return value
+
+
+class StepResult(BaseModel):
+    """Evidence for one attempted scenario step, including its exact state boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: NonEmptyString
+    type: NonEmptyString
+    success: bool
+    started_at: datetime
+    completed_at: datetime
+    before: SimulationSnapshot
+    after: SimulationSnapshot
+    output: _FrozenJsonValue | None = None
+    updates: tuple[_FrozenJsonObject, ...] = ()
+    artifacts: tuple[_FrozenJsonObject, ...] = ()
+    error: str | None = None
+    error_type: NonEmptyString | None = None
+    error_message: str | None = None
+    expected_error: bool = False
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def require_aware_step_timestamp(cls, value: datetime) -> datetime:
+        """Keep step timestamps deterministic and unambiguous."""
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("step timestamps must include a timezone")
+        return value
+
+
+class SimulationRun(BaseModel):
+    """Complete deterministic journey evidence, ready for later hard graders."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scenario_id: NonEmptyString
+    seed: StrictInt
+    started_at: datetime
+    completed_at: datetime
+    success: bool
+    steps: tuple[StepResult, ...]
+    final_snapshot: SimulationSnapshot
+    outputs: tuple[_FrozenJsonValue, ...] = ()
+    serialized_outputs: tuple[str, ...] = ()
+    last_output: _FrozenJsonValue | None = None
+    updates: tuple[_FrozenJsonObject, ...] = ()
+    artifacts: tuple[_FrozenJsonObject, ...] = ()
+
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def require_aware_run_timestamp(cls, value: datetime) -> datetime:
+        """Keep run timestamps deterministic and unambiguous."""
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("run timestamps must include a timezone")
+        return value

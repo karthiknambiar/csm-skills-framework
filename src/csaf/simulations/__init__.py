@@ -2,6 +2,7 @@
 
 from csaf.simulations.faults import FaultRegistry
 from csaf.simulations.loader import SimulationDatasetError, load_scenarios
+from csaf.simulations.runner import JourneyRunner
 from csaf.simulations.schema import (
     AdvanceTimeStep,
     ArtifactTypesExpectation,
@@ -20,8 +21,11 @@ from csaf.simulations.schema import (
     SeedMemoryStep,
     SetFaultStep,
     SimulationExpectation,
+    SimulationRun,
     SimulationScenario,
+    SimulationSnapshot,
     SimulationStep,
+    StepResult,
 )
 from csaf.simulations.world import MutableClock, SimulationOfficeRenderer, SimulationWorld
 
@@ -34,6 +38,7 @@ __all__ = [
     "FaultRegistry",
     "ForbiddenTermExpectation",
     "IngestFixtureStep",
+    "JourneyRunner",
     "MemoryCountExpectation",
     "MemoryRevisionExpectation",
     "MutableClock",
@@ -46,9 +51,12 @@ __all__ = [
     "SetFaultStep",
     "SimulationDatasetError",
     "SimulationExpectation",
+    "SimulationRun",
     "SimulationOfficeRenderer",
     "SimulationScenario",
+    "SimulationSnapshot",
     "SimulationStep",
     "SimulationWorld",
+    "StepResult",
     "load_scenarios",
 ]

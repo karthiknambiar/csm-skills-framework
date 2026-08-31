@@ -1,0 +1,467 @@
+"""Deterministic scenario execution with failure-preserving evidence."""
+
+import base64
+import json
+import re
+import sqlite3
+from collections.abc import Mapping
+from pathlib import Path
+
+from pydantic import ValidationError
+
+from csaf.connectors import ConnectorIngestor
+from csaf.connectors.errors import ConnectorDataError, ConnectorError
+from csaf.connectors.types import (
+    AuthenticationKind,
+    ConnectorCredentials,
+    ConnectorMetadata,
+    ConnectorPage,
+    ConnectorRecord,
+    NormalizedRecord,
+)
+from csaf.simulations.schema import (
+    AdvanceTimeStep,
+    ClearFaultsStep,
+    IngestFixtureStep,
+    RunSkillStep,
+    SeedMemoryStep,
+    SetFaultStep,
+    SimulationRun,
+    SimulationScenario,
+    SimulationSnapshot,
+    StepResult,
+)
+from csaf.simulations.world import SimulationWorld
+from csaf.skills.types import Artifact
+
+_FIXTURE_FIELDS = frozenset(
+    {"id", "kind", "content", "logical_key", "metadata", "occurred_at", "confidence"}
+)
+_SECRET_PATTERN = re.compile(r"\b(?:sk|pk|api)[-_][A-Za-z0-9_-]{8,}\b", re.IGNORECASE)
+
+
+class _FixtureConnector:
+    """A prevalidated, local-only JSON fixture connector with deterministic pages."""
+
+    metadata = ConnectorMetadata(
+        name="simulation-fixture",
+        description="Ingest prevalidated JSON simulation fixture records.",
+        version="1.0.0",
+        authentication=AuthenticationKind.NONE,
+        source_types=("json",),
+        supports_incremental_sync=False,
+    )
+
+    def __init__(
+        self,
+        records: tuple[tuple[ConnectorRecord, NormalizedRecord], ...],
+        world: SimulationWorld,
+    ) -> None:
+        self._records = records
+        self._world = world
+
+    def authenticate(self, credentials: ConnectorCredentials | None = None) -> None:
+        """Consume transient connector faults before the ingestor can append data."""
+
+        if credentials is not None and credentials.values:
+            raise ConnectorDataError("simulation fixtures do not accept credentials")
+        if self._world.faults.consume("connector_timeout"):
+            raise ConnectorError("simulated connector timeout")
+        if self._world.faults.consume("connector_rate_limit"):
+            raise ConnectorError("simulated connector rate limit")
+
+    def fetch_page(self, cursor: str | None = None, limit: int = 100) -> ConnectorPage:
+        """Return an immutable, stable slice without external access."""
+
+        if limit < 1 or limit > 1_000:
+            raise ValueError("limit must be between 1 and 1000")
+        try:
+            offset = int(cursor or "0")
+        except ValueError as error:
+            raise ConnectorDataError("invalid fixture connector cursor") from error
+        if offset < 0 or offset > len(self._records):
+            raise ConnectorDataError("fixture connector cursor is out of range")
+        end = min(offset + limit, len(self._records))
+        next_cursor = str(end) if end < len(self._records) else None
+        return ConnectorPage(
+            records=tuple(record for record, _ in self._records[offset:end]),
+            next_cursor=next_cursor,
+            checkpoint_cursor=str(end),
+        )
+
+    def normalize(self, record: ConnectorRecord) -> NormalizedRecord:
+        """Return the fixture record's schema-validated normalized representation."""
+
+        for source, normalized in self._records:
+            if source.external_id == record.external_id:
+                return normalized
+        raise ConnectorDataError("fixture connector record was not found")
+
+
+class JourneyRunner:
+    """Execute one scenario without taking ownership of the supplied simulation world."""
+
+    def __init__(self, world: SimulationWorld, fixture_root: Path | None = None) -> None:
+        self._world = world
+        self._fixture_root = Path(fixture_root) if fixture_root is not None else world.workspace
+
+    def run(self, scenario: SimulationScenario) -> SimulationRun:
+        """Run every step in order, retaining a before/after boundary for each attempt."""
+
+        started_at = self._world.clock.now()
+        steps: list[StepResult] = []
+        outputs: list[object] = []
+        serialized_outputs: list[str] = []
+        updates: list[dict[str, object]] = []
+        artifacts: list[dict[str, object]] = []
+        succeeded = True
+
+        for index, step in enumerate(scenario.steps, start=1):
+            step_id = step.id or f"step-{index}"
+            before = self._snapshot()
+            try:
+                output, step_updates, step_artifacts = self._dispatch(step)
+            except Exception as error:
+                after = self._snapshot()
+                error_type, error_message = self._error_details(error)
+                matched = self._matches_expected_error(step, error_type, error_message)
+                steps.append(
+                    StepResult(
+                        id=step_id,
+                        type=step.type,
+                        success=matched,
+                        started_at=before.captured_at,
+                        completed_at=after.captured_at,
+                        before=before,
+                        after=after,
+                        error=error_message,
+                        error_type=error_type,
+                        error_message=error_message,
+                        expected_error=matched,
+                    )
+                )
+                if not matched:
+                    succeeded = False
+                    break
+                continue
+
+            if isinstance(step, RunSkillStep) and step.expect_error is not None:
+                self._restore_step(before)
+                after = self._snapshot()
+                error_message = "expected error was not raised"
+                steps.append(
+                    StepResult(
+                        id=step_id,
+                        type=step.type,
+                        success=False,
+                        started_at=before.captured_at,
+                        completed_at=after.captured_at,
+                        before=before,
+                        after=after,
+                        output=output,
+                        updates=step_updates,
+                        artifacts=step_artifacts,
+                        error=error_message,
+                        error_type="ExpectedErrorNotRaised",
+                        error_message=error_message,
+                    )
+                )
+                succeeded = False
+                break
+
+            after = self._snapshot()
+            steps.append(
+                StepResult(
+                    id=step_id,
+                    type=step.type,
+                    success=True,
+                    started_at=before.captured_at,
+                    completed_at=after.captured_at,
+                    before=before,
+                    after=after,
+                    output=output,
+                    updates=step_updates,
+                    artifacts=step_artifacts,
+                )
+            )
+            updates.extend(step_updates)
+            artifacts.extend(step_artifacts)
+            if isinstance(step, RunSkillStep):
+                outputs.append(output)
+                serialized_outputs.append(_canonical_json(output))
+
+        final_snapshot = self._snapshot()
+        return SimulationRun(
+            scenario_id=scenario.id,
+            seed=scenario.seed,
+            started_at=started_at,
+            completed_at=self._world.clock.now(),
+            success=succeeded,
+            steps=tuple(steps),
+            final_snapshot=final_snapshot,
+            outputs=tuple(outputs),
+            serialized_outputs=tuple(serialized_outputs),
+            last_output=outputs[-1] if outputs else None,
+            updates=tuple(updates),
+            artifacts=tuple(artifacts),
+        )
+
+    def _dispatch(
+        self, step: object
+    ) -> tuple[object | None, tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
+        if isinstance(step, SeedMemoryStep):
+            persisted = self._world.seed(step.records)
+            return None, self._canonical_records(persisted), ()
+        if isinstance(step, RunSkillStep):
+            result = self._world.runtime.runner.run(
+                step.skill,
+                step.input,
+                artifact_handler=self._write_artifacts,
+            )
+            return (
+                _json_value(self._world.canonical_result(result.output)),
+                self._canonical_records(result.memory_updates),
+                self._canonical_artifacts(result.artifacts),
+            )
+        if isinstance(step, AdvanceTimeStep):
+            self._world.clock.advance(step.seconds)
+            return None, (), ()
+        if isinstance(step, SetFaultStep):
+            self._world.faults.set(step.fault, step.remaining_calls)
+            return None, (), ()
+        if isinstance(step, ClearFaultsStep):
+            self._world.faults.clear()
+            return None, (), ()
+        if isinstance(step, IngestFixtureStep):
+            memory_before = {record["id"] for record in self._world.memory_snapshot()}
+            result = ConnectorIngestor(self._world.runtime.memory).ingest(
+                self._fixture_connector(step.fixture), step.customer_id
+            )
+            updates = tuple(
+                _json_value(record)
+                for record in self._world.memory_snapshot()
+                if record["id"] not in memory_before
+            )
+            return (
+                _json_value(
+                    self._world.canonical_result(
+                        {
+                            "connector_name": result.connector_name,
+                            "customer_id": result.customer_id,
+                            "records_seen": result.records_seen,
+                            "records_written": result.records_written,
+                            "memory_record_ids": result.memory_record_ids,
+                            "checkpoint": {
+                                "cursor": result.checkpoint.cursor,
+                                "state": result.checkpoint.state,
+                            },
+                        }
+                    )
+                ),
+                updates,
+                (),
+            )
+        raise TypeError("unsupported simulation step")
+
+    def _write_artifacts(self, artifacts: tuple[Artifact, ...]) -> None:
+        if self._world.faults.consume("artifact_commit_failure"):
+            raise RuntimeError("simulated artifact commit failure")
+        self._world.write_artifacts(artifacts)
+
+    def _fixture_connector(self, fixture: str) -> _FixtureConnector:
+        path = self._safe_fixture_path(fixture)
+        return _FixtureConnector(self._load_fixture(path, fixture), self._world)
+
+    def _safe_fixture_path(self, fixture: str) -> Path:
+        root = self._fixture_root
+        try:
+            resolved_root = root.resolve(strict=True)
+        except OSError as error:
+            raise ConnectorDataError("fixture root is unavailable") from error
+        candidate = Path(fixture)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise ConnectorDataError("fixture path must be a relative basename")
+        path = root / candidate
+        if root.is_symlink() or any(
+            (root / Path(*candidate.parts[:index])).is_symlink()
+            for index in range(1, len(candidate.parts) + 1)
+        ):
+            raise ConnectorDataError("fixture path must not use symlinks")
+        try:
+            resolved_path = path.resolve(strict=True)
+        except OSError as error:
+            raise ConnectorDataError("fixture source is unavailable") from error
+        try:
+            resolved_path.relative_to(resolved_root)
+        except ValueError:
+            raise ConnectorDataError("fixture path escapes the fixture root") from None
+        if not resolved_path.is_file():
+            raise ConnectorDataError("fixture source is not a file")
+        return resolved_path
+
+    def _load_fixture(
+        self, path: Path, fixture: str
+    ) -> tuple[tuple[ConnectorRecord, NormalizedRecord], ...]:
+        if path.suffix.casefold() != ".json":
+            raise ConnectorDataError("simulation fixtures must be JSON files")
+        try:
+            document = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=_no_duplicate_keys,
+                parse_constant=_reject_non_finite,
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise ConnectorDataError("fixture JSON is invalid") from error
+        if not isinstance(document, dict) or set(document) != {"records"}:
+            raise ConnectorDataError("fixture must be an object with only a records array")
+        records = document["records"]
+        if not isinstance(records, list):
+            raise ConnectorDataError("fixture records must be an array")
+
+        parsed: list[tuple[ConnectorRecord, NormalizedRecord]] = []
+        seen_ids: set[str] = set()
+        for index, value in enumerate(records, start=1):
+            if not isinstance(value, dict) or set(value) - _FIXTURE_FIELDS:
+                raise ConnectorDataError("fixture record has an invalid schema")
+            external_id = value.get("id")
+            if type(external_id) is not str or not external_id.strip() or external_id in seen_ids:
+                raise ConnectorDataError("fixture record ids must be unique non-blank strings")
+            seen_ids.add(external_id)
+            payload = {key: item for key, item in value.items() if key != "id"}
+            try:
+                normalized = NormalizedRecord.model_validate(payload)
+                source = ConnectorRecord(
+                    external_id=external_id,
+                    source_type="simulation_fixture",
+                    source_uri=f"fixture:{fixture}#{index}",
+                    payload=payload,
+                )
+            except ValidationError as error:
+                raise ConnectorDataError("fixture record has an invalid schema") from error
+            parsed.append((source, normalized))
+        return tuple(parsed)
+
+    def _snapshot(self) -> SimulationSnapshot:
+        artifacts = self._artifact_snapshot()
+        office_requests = tuple(
+            _json_value(self._world.canonical_result(request))
+            for request in self._world.office.requests
+        )
+        return SimulationSnapshot(
+            captured_at=self._world.clock.now(),
+            memory=tuple(_json_value(record) for record in self._world.memory_snapshot()),
+            artifacts=artifacts,
+            office_requests=office_requests,
+        )
+
+    def _artifact_snapshot(self) -> tuple[dict[str, object], ...]:
+        directory = self._world.workspace / "artifacts"
+        if not directory.exists():
+            return ()
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("simulation artifact directory is unsafe")
+        artifacts: list[dict[str, object]] = []
+        for path in sorted(directory.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            artifacts.append(
+                {
+                    "filename": path.relative_to(directory).as_posix(),
+                    "content": base64.b64encode(path.read_bytes()).decode("ascii"),
+                }
+            )
+        return tuple(artifacts)
+
+    def _restore_step(self, before: SimulationSnapshot) -> None:
+        """Remove effects of a successful call that was required to raise an error."""
+
+        known_ids = {record["id"] for record in before.memory}
+        with sqlite3.connect(self._world.database_path) as connection:
+            rows = connection.execute("SELECT id FROM memory_records").fetchall()
+            unexpected_ids = [row[0] for row in rows if row[0] not in known_ids]
+            if unexpected_ids:
+                connection.executemany(
+                    "DELETE FROM memory_records WHERE id = ?",
+                    ((record_id,) for record_id in unexpected_ids),
+                )
+
+        directory = self._world.workspace / "artifacts"
+        known_files = {artifact["filename"] for artifact in before.artifacts}
+        if not directory.exists():
+            return
+        for path in sorted(directory.rglob("*"), reverse=True):
+            if path.is_symlink():
+                raise ValueError("simulation artifact directory is unsafe")
+            if path.is_file() and path.relative_to(directory).as_posix() not in known_files:
+                path.unlink()
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+
+    def _canonical_records(self, records: object) -> tuple[dict[str, object], ...]:
+        return tuple(_json_value(self._world.canonical_result(record)) for record in records)  # type: ignore[arg-type]
+
+    def _canonical_artifacts(
+        self, artifacts: tuple[Artifact, ...]
+    ) -> tuple[dict[str, object], ...]:
+        return tuple(_json_value(self._world.canonical_result(artifact)) for artifact in artifacts)
+
+    @staticmethod
+    def _matches_expected_error(step: object, error_type: str, error_message: str) -> bool:
+        expected = step.expect_error if isinstance(step, RunSkillStep) else None
+        return expected is not None and (
+            expected == error_type
+            or expected == error_message
+            or error_message.startswith(f"{expected}:")
+        )
+
+    def _error_details(self, error: Exception) -> tuple[str, str]:
+        error_type = "ConnectorError" if isinstance(error, ConnectorError) else type(error).__name__
+        message = _sanitize_error(str(error), self._world.workspace, self._fixture_root)
+        return error_type, message or "simulation step failed"
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate keys that normal ``json.loads`` would silently overwrite."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _reject_non_finite(value: str) -> object:
+    """Reject JSON constants such as NaN and Infinity."""
+
+    raise ValueError(f"non-finite JSON value: {value}")
+
+
+def _canonical_json(value: object) -> str:
+    """Serialize a frozen JSON value in a stable form for downstream graders."""
+
+    return json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False
+    )
+
+
+def _json_value(value: object) -> object:
+    """Turn the world's immutable canonical containers into JSON validation inputs."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _sanitize_error(error: str, workspace: Path, fixture_root: Path) -> str:
+    """Keep stable diagnostics while removing paths, secrets, and traceback fragments."""
+
+    sanitized = error.replace("\r", " ").replace("\n", " ")
+    for path in {str(workspace), str(fixture_root), str(workspace).replace("\\", "/")}:
+        if path:
+            sanitized = sanitized.replace(path, "<path>")
+    sanitized = _SECRET_PATTERN.sub("<redacted>", sanitized)
+    sanitized = sanitized.replace("Traceback", "error")
+    return sanitized[:500]
