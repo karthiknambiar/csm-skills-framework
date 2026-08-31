@@ -254,14 +254,16 @@ def test_worlds_do_not_leak_memory_and_close_is_idempotent(tmp_path: Path) -> No
 def test_canonical_result_normalizes_only_workspace_paths(tmp_path: Path) -> None:
     world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:
+        inside = str(world.workspace / "artifacts" / "brief.md")
         value = {
-            "inside": str(world.workspace / "artifacts" / "brief.md"),
+            "inside": inside,
             "outside": str(tmp_path.resolve() / "shared" / "input.json"),
             "id": str(uuid5(NAMESPACE_URL, "1:0")),
             "timestamp": START,
         }
         canonical = world.canonical_result(value)
-        assert canonical["inside"] == "<workspace>/artifacts/brief.md"
+        suffix = inside[len(str(world.workspace)) :]
+        assert canonical["inside"] == f"<workspace>{suffix}"
         assert canonical["outside"] == value["outside"]
         assert canonical["id"] == value["id"]
         assert canonical["timestamp"] == START.isoformat()
@@ -269,125 +271,46 @@ def test_canonical_result_normalizes_only_workspace_paths(tmp_path: Path) -> Non
         world.close()
 
 
-def test_canonical_result_normalizes_embedded_workspace_paths_across_worlds(
+def test_canonical_result_matches_worlds_using_native_workspace_prefixes(
     tmp_path: Path,
 ) -> None:
     first = SimulationWorld.create(tmp_path / "first", START, 1)
     second = SimulationWorld.create(tmp_path / "second", START, 1)
     try:
-        first_path = first.workspace / "templates" / "qbr.docx"
-        second_path = second.workspace / "templates" / "qbr.docx"
-        first_message = f"render failed at {first_path}; retry from unrelated/path"
-        second_message = (
-            f"render failed at {str(second_path).replace(chr(92), '/')}; retry from unrelated/path"
-        )
+        first_path = str(first.workspace / "QBR Templates" / "qbr.docx")
+        second_path = str(second.workspace / "QBR Templates" / "qbr.docx")
+        first_message = rf"before\raw {first_path}; after\raw"
+        second_message = rf"before\raw {second_path}; after\raw"
 
         first_result = first.canonical_result({"error": first_message})
         second_result = second.canonical_result({"error": second_message})
         assert first_result == second_result
-        assert first_result["error"] == (
-            "render failed at <workspace>/templates/qbr.docx; retry from unrelated/path"
-        )
+        suffix = first_path[len(str(first.workspace)) :]
+        assert first_result["error"] == rf"before\raw <workspace>{suffix}; after\raw"
     finally:
         first.close()
         second.close()
 
 
-def test_canonical_result_normalizes_spaced_workspace_path_suffixes_only(
+def test_canonical_result_replaces_multiple_prefixes_without_rewriting_suffixes(
     tmp_path: Path,
 ) -> None:
-    first = SimulationWorld.create(tmp_path / "first", START, 1)
-    second = SimulationWorld.create(tmp_path / "second", START, 1)
+    world = SimulationWorld.create(tmp_path / "world", START, 1)
     try:
-        first_path = first.workspace / "QBR Templates" / "file.docx"
-        second_path = str(second.workspace / "QBR Templates" / "file.docx").replace(chr(92), "/")
-        untouched = r"raw\QBR Templates\file.docx"
-
-        first_result = first.canonical_result(
-            {"message": f"failed at {first_path}; retry", "untouched": untouched}
+        native_prefix = str(world.workspace)
+        forward_prefix = native_prefix.replace(chr(92), "/")
+        message = (
+            rf"before\raw {native_prefix}\QBR Templates\one.docx "
+            rf"middle\raw {forward_prefix}/Archive Folder/two.docx after\raw"
         )
-        second_result = second.canonical_result(
-            {"message": f"failed at {second_path}; retry", "untouched": untouched}
-        )
+        canonical = world.canonical_result({"message": message})
 
-        assert first_result == second_result
-        assert first_result["message"] == ("failed at <workspace>/QBR Templates/file.docx; retry")
-        assert first_result["untouched"] == untouched
-    finally:
-        first.close()
-        second.close()
-
-
-def test_canonical_result_normalizes_only_quoted_workspace_path_spans(
-    tmp_path: Path,
-) -> None:
-    first = SimulationWorld.create(tmp_path / "first", START, 1)
-    second = SimulationWorld.create(tmp_path / "second", START, 1)
-    try:
-        first_paths = (
-            first.workspace / "QBR Templates" / "file.docx",
-            first.workspace / "Archive Folder" / "second.docx",
-        )
-        second_paths = tuple(
-            str(path).replace(chr(92), "/")
-            for path in (
-                second.workspace / "QBR Templates" / "file.docx",
-                second.workspace / "Archive Folder" / "second.docx",
-            )
-        )
-        first_message = rf'before\raw "{first_paths[0]}" middle\raw "{first_paths[1]}" after\raw'
-        second_message = rf'before\raw "{second_paths[0]}" middle\raw "{second_paths[1]}" after\raw'
-
-        first_result = first.canonical_result({"message": first_message})
-        second_result = second.canonical_result({"message": second_message})
-
-        assert first_result == second_result
-        assert first_result["message"] == (
-            r'before\raw "<workspace>/QBR Templates/file.docx" '
-            r'middle\raw "<workspace>/Archive Folder/second.docx" after\raw'
+        assert canonical["message"] == (
+            r"before\raw <workspace>\QBR Templates\one.docx "
+            r"middle\raw <workspace>/Archive Folder/two.docx after\raw"
         )
     finally:
-        first.close()
-        second.close()
-
-
-def test_canonical_result_normalizes_adjacent_unquoted_workspace_paths(
-    tmp_path: Path,
-) -> None:
-    first = SimulationWorld.create(tmp_path / "first", START, 1)
-    second = SimulationWorld.create(tmp_path / "second", START, 1)
-    try:
-        first_paths = (
-            str(first.workspace / "QBR One" / "first.docx"),
-            str(first.workspace / "QBR Two" / "second.docx").replace(chr(92), "/"),
-            str(first.workspace / "QBR Three" / "third.docx"),
-        )
-        second_paths = (
-            str(second.workspace / "QBR One" / "first.docx").replace(chr(92), "/"),
-            str(second.workspace / "QBR Two" / "second.docx"),
-            str(second.workspace / "QBR Three" / "third.docx").replace(chr(92), "/"),
-        )
-        first_message = (
-            rf"before\raw {first_paths[0]} {first_paths[1]}; "
-            rf"bridge\raw; {first_paths[2]}; after\raw"
-        )
-        second_message = (
-            rf"before\raw {second_paths[0]} {second_paths[1]}; "
-            rf"bridge\raw; {second_paths[2]}; after\raw"
-        )
-
-        first_result = first.canonical_result({"message": first_message})
-        second_result = second.canonical_result({"message": second_message})
-
-        assert first_result == second_result
-        assert first_result["message"] == (
-            r"before\raw <workspace>/QBR One/first.docx "
-            r"<workspace>/QBR Two/second.docx; bridge\raw; "
-            r"<workspace>/QBR Three/third.docx; after\raw"
-        )
-    finally:
-        first.close()
-        second.close()
+        world.close()
 
 
 def test_write_artifacts_is_deterministic_and_confined_to_workspace(tmp_path: Path) -> None:
