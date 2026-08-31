@@ -10,6 +10,7 @@ from pydantic import (
     Field,
     JsonValue,
     PlainSerializer,
+    SerializationInfo,
     StrictInt,
     field_serializer,
     field_validator,
@@ -108,13 +109,13 @@ class SeedMemoryStep(BaseModel):
             for record in value
         )
 
-    @field_serializer("records", when_used="json")
+    @field_serializer("records")
     def serialize_records(
-        self, records: tuple[MemoryRecordCreate, ...]
+        self, records: tuple[MemoryRecordCreate, ...], info: SerializationInfo
     ) -> tuple[dict[str, object], ...]:
         """Serialize private frozen records through ordinary JSON payloads."""
 
-        return tuple(record.model_dump(mode="json") for record in records)
+        return tuple(record.model_dump(mode=info.mode) for record in records)
 
 
 class RunSkillStep(BaseModel):

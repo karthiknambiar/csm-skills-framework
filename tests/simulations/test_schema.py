@@ -3,6 +3,7 @@
 import json
 import warnings
 from copy import copy, deepcopy
+from datetime import UTC, datetime
 from typing import get_type_hints
 
 import pytest
@@ -478,8 +479,10 @@ def test_seed_memory_public_contract_remains_domain_record_type() -> None:
     assert not hasattr(simulations, "SimulationMemoryRecordCreate")
 
 
-def test_standard_json_serialization_is_warning_free_and_round_trips() -> None:
+def test_standard_serialization_modes_are_warning_free_and_preserve_native_values() -> None:
     data = valid_scenario()
+    occurred_at = datetime(2026, 8, 31, 1, 30, tzinfo=UTC)
+    data["steps"][0]["records"][0]["occurred_at"] = occurred_at
     data["steps"][0]["records"][0]["metadata"] = {
         "labels": ["enterprise"],
         "details": {"score": 1.25},
@@ -488,9 +491,16 @@ def test_standard_json_serialization_is_warning_free_and_round_trips() -> None:
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
+        python_dump = scenario.model_dump()
+        json_dump = scenario.model_dump(mode="json")
         encoded = scenario.model_dump_json()
     restored = SimulationScenario.model_validate_json(encoded)
 
+    python_record = python_dump["steps"][0]["records"][0]
+    json_record = json_dump["steps"][0]["records"][0]
+    assert python_record["occurred_at"] is occurred_at
+    assert json_record["occurred_at"] == "2026-08-31T01:30:00Z"
+    assert json.loads(encoded) == json_dump
     assert restored == scenario
 
 
