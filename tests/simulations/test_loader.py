@@ -149,6 +149,23 @@ def test_wraps_schema_validation_errors(
     assert isinstance(caught.value.__cause__, ValidationError)
 
 
+def test_schema_validation_error_does_not_leak_invalid_discriminator(tmp_path: Path) -> None:
+    source = tmp_path / "invalid-step.json"
+    payload = scenario_payload()
+    payload["steps"] = [{"type": "secret-do-not-leak"}]
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SimulationDatasetError) as caught:
+        load_scenarios(source)
+
+    message = str(caught.value)
+    assert source.name in message
+    assert "steps.0" in message
+    assert "union_tag_invalid" in message
+    assert "secret-do-not-leak" not in message
+    assert isinstance(caught.value.__cause__, ValidationError)
+
+
 def test_rejects_duplicate_ids_across_files(tmp_path: Path) -> None:
     first = tmp_path / "a.json"
     duplicate = tmp_path / "b.json"
@@ -169,6 +186,8 @@ def test_rejects_duplicate_ids_across_files(tmp_path: Path) -> None:
         "/fixtures/account.json",
         "C:/fixtures/account.json",
         r"C:\fixtures\account.json",
+        r"C:fixture.json",
+        r"\fixture.json",
         r"\\server\share\account.json",
         "../account.json",
         "fixtures/../account.json",

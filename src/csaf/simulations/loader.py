@@ -60,7 +60,7 @@ def _validation_summary(error: ValidationError) -> str:
     details: list[str] = []
     for item in error.errors(include_url=False, include_input=False):
         location = ".".join(str(part) for part in item["loc"]) or "scenario"
-        details.append(f"{location}: {item['msg']}")
+        details.append(f"{location}: {item['type']}")
     return "; ".join(details)
 
 
@@ -72,9 +72,11 @@ def _validate_fixture_boundaries(scenario: SimulationScenario) -> None:
             continue
         fixture = step.fixture
         components = fixture.replace("\\", "/").split("/")
+        windows_path = PureWindowsPath(fixture)
         if (
             PurePosixPath(fixture).is_absolute()
-            or PureWindowsPath(fixture).is_absolute()
+            or bool(windows_path.drive)
+            or bool(windows_path.root)
             or ".." in components
         ):
             raise ValueError(f"fixture path escapes the dataset boundary: {fixture}")
