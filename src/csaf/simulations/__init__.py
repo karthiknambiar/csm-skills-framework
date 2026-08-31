@@ -1,5 +1,6 @@
 """Public contracts for deterministic CSAF simulations."""
 
+from csaf.simulations.loader import SimulationDatasetError, load_scenarios
 from csaf.simulations.schema import (
     AdvanceTimeStep,
     ArtifactTypesExpectation,
@@ -39,7 +40,9 @@ __all__ = [
     "RunSkillStep",
     "SeedMemoryStep",
     "SetFaultStep",
+    "SimulationDatasetError",
     "SimulationExpectation",
     "SimulationScenario",
     "SimulationStep",
+    "load_scenarios",
 ]

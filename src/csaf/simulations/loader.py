@@ -1,0 +1,140 @@
+"""Load and validate deterministic simulation scenario datasets."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from pydantic import ValidationError
+
+from csaf.simulations.schema import IngestFixtureStep, SimulationScenario
+
+
+class SimulationDatasetError(ValueError):
+    """A simulation dataset could not be loaded safely and completely."""
+
+
+def _dataset_error(source: Path, message: str, cause: Exception) -> SimulationDatasetError:
+    """Build a consistently sourced public dataset error."""
+
+    return SimulationDatasetError(f"{source}: {message}: {cause}")
+
+
+def _discover_sources(path: Path) -> tuple[Path, ...]:
+    """Resolve one JSON file or a deterministic non-recursive directory listing."""
+
+    if path.is_file():
+        if path.suffix != ".json":
+            cause = ValueError("input file must have a .json suffix")
+            raise _dataset_error(path, "unsupported dataset input", cause) from cause
+        return (path,)
+
+    if path.is_dir():
+        try:
+            sources = tuple(
+                sorted(
+                    (
+                        candidate
+                        for candidate in path.glob("*.json")
+                        if candidate.is_file() and candidate.suffix == ".json"
+                    ),
+                    key=str,
+                )
+            )
+        except OSError as cause:
+            raise _dataset_error(path, "unable to discover scenario files", cause) from cause
+        if not sources:
+            cause = ValueError("no JSON scenario files found")
+            raise _dataset_error(path, "empty dataset directory", cause) from cause
+        return sources
+
+    cause = FileNotFoundError("path does not exist") if not path.exists() else ValueError(
+        "path is neither a JSON file nor a directory"
+    )
+    raise _dataset_error(path, "unsupported dataset input", cause) from cause
+
+
+def _validation_summary(error: ValidationError) -> str:
+    """Summarize validation failures without echoing source payload values."""
+
+    details: list[str] = []
+    for item in error.errors(include_url=False, include_input=False):
+        location = ".".join(str(part) for part in item["loc"]) or "scenario"
+        details.append(f"{location}: {item['msg']}")
+    return "; ".join(details)
+
+
+def _validate_fixture_boundaries(scenario: SimulationScenario) -> None:
+    """Reject fixture references that can escape the fixture dataset root."""
+
+    for step in scenario.steps:
+        if not isinstance(step, IngestFixtureStep):
+            continue
+        fixture = step.fixture
+        components = fixture.replace("\\", "/").split("/")
+        if (
+            PurePosixPath(fixture).is_absolute()
+            or PureWindowsPath(fixture).is_absolute()
+            or ".." in components
+        ):
+            raise ValueError(f"fixture path escapes the dataset boundary: {fixture}")
+
+
+def _load_source(source: Path) -> SimulationScenario:
+    """Load and validate exactly one scenario source file."""
+
+    try:
+        raw = source.read_bytes()
+    except OSError as cause:
+        raise _dataset_error(source, "unable to read scenario file", cause) from cause
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as cause:
+        raise _dataset_error(source, "scenario file is not UTF-8", cause) from cause
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as cause:
+        detail = f"malformed JSON at line {cause.lineno} column {cause.colno}"
+        raise _dataset_error(source, detail, cause) from cause
+
+    if not isinstance(payload, dict):
+        cause = TypeError("scenario root must be a JSON object")
+        raise _dataset_error(source, "invalid scenario root", cause) from cause
+
+    try:
+        scenario = SimulationScenario.model_validate(payload)
+    except ValidationError as cause:
+        summary = _validation_summary(cause)
+        safe_cause = ValueError(summary)
+        raise _dataset_error(source, "scenario schema validation failed", safe_cause) from cause
+
+    try:
+        _validate_fixture_boundaries(scenario)
+    except ValueError as cause:
+        raise _dataset_error(source, "invalid fixture path", cause) from cause
+    return scenario
+
+
+def load_scenarios(path: str | Path) -> tuple[SimulationScenario, ...]:
+    """Load all scenarios from one JSON file or a flat JSON directory."""
+
+    source_path = Path(path)
+    sources = _discover_sources(source_path)
+    scenarios: list[SimulationScenario] = []
+    scenario_sources: dict[str, Path] = {}
+    for source in sources:
+        scenario = _load_source(source)
+        if scenario.id in scenario_sources:
+            first_source = scenario_sources[scenario.id]
+            cause = ValueError(
+                f"duplicate scenario id {scenario.id!r}; first defined in {first_source}"
+            )
+            raise _dataset_error(source, "duplicate scenario id", cause) from cause
+        scenario_sources[scenario.id] = source
+        scenarios.append(scenario)
+    return tuple(scenarios)
+
+
+__all__ = ["SimulationDatasetError", "load_scenarios"]
