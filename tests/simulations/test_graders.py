@@ -401,3 +401,83 @@ def test_cross_customer_scans_decoded_utf8_artifact_content(tmp_path):
         .grade(scenario, run.model_copy(update={"artifacts": (text,)}))
         .passed
     )
+
+
+def test_artifact_grader_accepts_url_safe_binary_base64(tmp_path):
+    scenario = _scenario([{"type": "artifact_types", "values": ["markdown"]}])
+    run = _run(tmp_path, scenario)
+    artifact = dict(run.artifacts[0])
+    artifact["content"] = "-_8="
+    artifact["sha256"] = hashlib.sha256(b"\xfb\xff").hexdigest()
+
+    assert (
+        DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"artifacts": (artifact,)}))
+        .passed
+    )
+
+
+def test_cross_customer_accepts_url_safe_binary_artifact(tmp_path):
+    scenario = _scenario([{"type": "no_cross_customer_data"}], customers=("acme", "globex"))
+    run = _run(tmp_path, scenario)
+    artifact = dict(run.artifacts[0])
+    artifact["content"] = "-_8="
+    artifact["sha256"] = hashlib.sha256(b"\xfb\xff").hexdigest()
+
+    assert (
+        DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"artifacts": (artifact,)}))
+        .passed
+    )
+
+
+def test_cross_customer_reconciles_step_prefix_and_update_evidence(tmp_path):
+    scenario = _scenario(
+        [{"type": "no_cross_customer_data"}],
+        steps=[
+            {
+                "id": "first",
+                "type": "run_skill",
+                "skill": "account-brief",
+                "input": {"customer_id": "acme"},
+            },
+            {"id": "second", "type": "advance_time", "seconds": 1},
+        ],
+    )
+    run = _run(tmp_path, scenario)
+
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"steps": (run.steps[0],)}))
+        .passed
+    )
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"steps": (run.steps[1], run.steps[0])}))
+        .passed
+    )
+    missing_updates = run.steps[0].model_copy(update={"updates": ()})
+    assert (
+        not DeterministicGrader()
+        .grade(
+            scenario,
+            run.model_copy(update={"steps": (missing_updates, run.steps[1]), "updates": ()}),
+        )
+        .passed
+    )
+
+
+def test_cross_customer_reconciles_snapshot_memory_writes(tmp_path):
+    scenario = _scenario([{"type": "no_cross_customer_data"}])
+    run = _run(tmp_path, scenario)
+    foreign = dict(run.steps[0].after.memory[0])
+    foreign.update({"id": "foreign", "customer_id": "globex"})
+    after = run.steps[0].after.model_copy(update={"memory": (*run.steps[0].after.memory, foreign)})
+    step = run.steps[0].model_copy(update={"after": after})
+    final = run.final_snapshot.model_copy(update={"memory": after.memory})
+
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"steps": (step,), "final_snapshot": final}))
+        .passed
+    )

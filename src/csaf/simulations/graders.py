@@ -234,12 +234,22 @@ def _artifact_is_valid(artifact: Mapping[str, object]) -> bool:
     if not filename.casefold().endswith(extension) or media_type != expected_media_type:
         return False
     try:
-        decoded = base64.b64decode(content, validate=True)
-    except (binascii.Error, ValueError):
+        decoded = _decode_artifact_content(content)
+    except ValueError:
         return False
-    if not decoded or not re.fullmatch(r"[0-9a-f]{64}", digest):
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
         return False
     return hashlib.sha256(decoded).hexdigest() == digest
+
+
+def _decode_artifact_content(value: str) -> bytes:
+    try:
+        decoded = base64.b64decode(value, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("artifact content is invalid") from error
+    if not decoded:
+        raise ValueError("artifact content is empty")
+    return decoded
 
 
 def _safe_basename(filename: str) -> bool:
@@ -293,11 +303,14 @@ def _no_cross_customer_data(
 ) -> bool:
     customers = set(scenario.customers)
     all_targets = _target_steps_for_boundary(None, scenario, run)
+    additions = _reconcile_tenant_evidence(scenario, run, all_targets)
+    if additions is None:
+        return False
     targets = tuple(
         (step, customer) for step, customer in all_targets if step_id is None or step.id == step_id
     )
     if not targets:
-        return len(customers) == 1
+        return False
     if len(customers) > 1 and any(customer is None for _, customer in targets):
         return False
 
@@ -307,6 +320,11 @@ def _no_cross_customer_data(
         if not _aggregate_is_safe(step.updates, ((step, customer),), customers):
             return False
         if not _artifacts_are_safe(step.artifacts, ((step, customer),), customers):
+            return False
+    for step, customer, records in additions:
+        if step_id is not None and step.id != step_id:
+            continue
+        if not _evidence_is_safe(records, customer, customers):
             return False
 
     updates = tuple((step, customer) for step, customer in all_targets for _ in step.updates)
@@ -459,6 +477,92 @@ def _target_steps_for_boundary(
     return tuple(result)
 
 
+def _reconcile_tenant_evidence(
+    scenario: SimulationScenario,
+    run: SimulationRun,
+    targets: Sequence[tuple[StepResult, str | None]],
+) -> tuple[tuple[StepResult, str | None, tuple[Mapping[str, object], ...]], ...] | None:
+    declared_ids = tuple(step.id or f"step-{index}" for index, step in enumerate(scenario.steps, 1))
+    actual_ids = tuple(step.id for step in run.steps)
+    if not actual_ids or actual_ids != declared_ids[: len(actual_ids)]:
+        return None
+    if run.success:
+        if len(actual_ids) != len(declared_ids) or not all(step.success for step in run.steps):
+            return None
+    elif len(actual_ids) > len(declared_ids) or not all(step.success for step in run.steps[:-1]):
+        return None
+    elif run.steps[-1].success:
+        return None
+    if run.initial_snapshot != run.steps[0].before or run.final_snapshot != run.steps[-1].after:
+        return None
+
+    additions: list[tuple[StepResult, str | None, tuple[Mapping[str, object], ...]]] = []
+    previous = run.initial_snapshot
+    for step, customer in targets:
+        if step.before != previous:
+            return None
+        delta = _memory_additions(step.before.memory, step.after.memory)
+        if delta is None or not _same_records(delta, step.updates):
+            return None
+        additions.append((step, customer, delta))
+        previous = step.after
+    flattened = tuple(record for _, _, records in additions for record in records)
+    if not _same_records(flattened, run.updates):
+        return None
+    return tuple(additions)
+
+
+def _memory_additions(
+    before: Sequence[Mapping[str, object]], after: Sequence[Mapping[str, object]]
+) -> tuple[Mapping[str, object], ...] | None:
+    before_by_id = _records_by_id(before)
+    after_by_id = _records_by_id(after)
+    if before_by_id is None or after_by_id is None or set(before_by_id) - set(after_by_id):
+        return None
+    if any(not _records_equal(before_by_id[key], after_by_id[key]) for key in before_by_id):
+        return None
+    return tuple(record for record in after if record["id"] not in before_by_id)
+
+
+def _records_by_id(
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, Mapping[str, object]] | None:
+    result: dict[str, Mapping[str, object]] = {}
+    for record in records:
+        identifier = record.get("id")
+        if not isinstance(identifier, str) or not identifier or identifier in result:
+            return None
+        result[identifier] = record
+    return result
+
+
+def _same_records(
+    expected: Sequence[Mapping[str, object]], actual: Sequence[Mapping[str, object]]
+) -> bool:
+    expected_by_id = _records_by_id(expected)
+    actual_by_id = _records_by_id(actual)
+    return (
+        expected_by_id is not None
+        and actual_by_id is not None
+        and set(expected_by_id) == set(actual_by_id)
+        and all(_records_equal(expected_by_id[key], actual_by_id[key]) for key in expected_by_id)
+    )
+
+
+def _records_equal(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+    return _normalize_record(left) == _normalize_record(right)
+
+
+def _normalize_record(value: object, field: str | None = None) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _normalize_record(item, str(key)) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return tuple(_normalize_record(item) for item in value)
+    if field in {"created_at", "occurred_at", "updated_at"} and isinstance(value, str):
+        return value.removesuffix("+00:00") + "Z" if value.endswith("+00:00") else value
+    return value
+
+
 def _contains_customer_identifier(
     value: object, identifiers: set[str], allowed_customer: str | None = None
 ) -> bool:
@@ -490,8 +594,8 @@ def _artifact_text_contains_customer(
         if not isinstance(content, str):
             return True
         try:
-            decoded = base64.b64decode(content, validate=True)
-        except (binascii.Error, ValueError):
+            decoded = _decode_artifact_content(content)
+        except ValueError:
             return True
         try:
             text = decoded.decode("utf-8")
