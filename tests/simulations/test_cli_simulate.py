@@ -1,9 +1,6 @@
 """CLI coverage for deterministic simulation replay reports."""
 
 import json
-import os
-import shlex
-import subprocess
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -199,3 +196,19 @@ def test_simulate_uses_default_and_explicit_fixture_roots(tmp_path: Path) -> Non
         "scenarios"
     ][0]["replay_argv"]
     assert explicit_argv[-2:] == ["--fixture-root", str(explicit_root.resolve())]
+
+
+def test_replay_argv_preserves_metacharacters_without_relpath(tmp_path: Path, monkeypatch) -> None:
+    dataset = tmp_path / "a&b$c()``"
+    _write_dataset(dataset, _scenario("first"))
+    monkeypatch.setattr(
+        "csaf.cli.app.os.path.relpath", lambda *_: (_ for _ in ()).throw(AssertionError("called"))
+    )
+    result = runner.invoke(
+        app, ["simulate", str(dataset), "--report-dir", str(tmp_path / "reports")]
+    )
+    assert result.exit_code == 0
+    argv = json.loads((tmp_path / "reports" / "simulation-report.json").read_text())["scenarios"][
+        0
+    ]["replay_argv"]
+    assert argv[2] == str(dataset.resolve())

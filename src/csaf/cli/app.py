@@ -1,9 +1,6 @@
 """Typer command-line interface for CSAF."""
 
 import json
-import os
-import shlex
-import subprocess
 import tempfile
 from functools import partial
 from pathlib import Path

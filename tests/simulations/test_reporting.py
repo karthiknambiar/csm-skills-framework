@@ -256,3 +256,16 @@ def test_writer_cleans_temporary_file_when_replace_fails(
     with pytest.raises(OSError, match="blocked"):
         write_report_files(report, destination)
     assert list(destination.glob(".simulation-report-*")) == []
+
+
+def test_writer_rejects_symlink_report_directory_when_supported(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"directory symlinks unavailable: {error}")
+    with pytest.raises(ValueError, match="report directory is unsafe"):
+        write_report_files(report, link)
