@@ -1,5 +1,6 @@
 """Deterministic, redacted simulation report coverage."""
 
+import json
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -77,7 +78,15 @@ def _report(tmp_path: Path, *, secret: bool = False) -> SimulationSuiteReport:
         run=run,
         grade=grade,
         passed=run.success and grade.passed,
-        replay_command="csaf simulate scenarios --scenario reporting-check --seed 7",
+        replay_argv=(
+            "csaf",
+            "simulate",
+            str(tmp_path / "scenarios"),
+            "--scenario",
+            scenario.id,
+            "--seed",
+            str(scenario.seed),
+        ),
     )
     return SimulationSuiteReport(
         schema_version=1,
@@ -206,11 +215,9 @@ def test_serializers_redact_authorization_bearer_and_jwt_recursively(tmp_path: P
 
 def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Path) -> None:
     report = _report(tmp_path)
-    command = "csaf simulate 'x```y'"
     scenario = report.scenarios[0].model_copy(
         update={
             "scenario_title": "bad | <script> \\ `code`\nnext",
-            "replay_command": command,
         }
     )
     markdown = render_markdown(report.model_copy(update={"scenarios": (scenario,)}))
@@ -221,6 +228,116 @@ def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Pat
     fence = max((line for line in markdown.splitlines() if set(line) == {"`"}), key=len)
     assert fence == "```"
     assert "Each array is an argv vector" in markdown
+
+
+@pytest.mark.parametrize(
+    "replay_argv",
+    [
+        ("csaf", "simulate", "scenarios", "--seed", "7"),
+        (
+            "csaf",
+            "simulate",
+            "scenarios",
+            "--scenario",
+            "reporting-check",
+            "--scenario",
+            "reporting-check",
+            "--seed",
+            "7",
+        ),
+        ("csaf", "simulate", "scenarios", "--scenario", "other", "--seed", "7"),
+        ("csaf", "simulate", "scenarios", "--scenario", "reporting-check", "--seed", "8"),
+        (
+            "csaf",
+            "simulate",
+            "scenarios",
+            "--scenario",
+            "reporting-check",
+            "--scenario=other",
+            "--seed",
+            "7",
+        ),
+    ],
+)
+def test_scenario_report_requires_exact_replay_identity(
+    tmp_path: Path, replay_argv: tuple[str, ...]
+) -> None:
+    report = _report(tmp_path)
+    payload = report.scenarios[0].model_dump()
+    payload["replay_argv"] = replay_argv
+
+    with pytest.raises(ValueError, match="replay argv"):
+        SimulationScenarioReport.model_validate(payload)
+
+
+def test_canonical_json_removes_nested_artifact_payloads_with_integrity_summaries(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    encoded = "c2VjcmV0IGFydGlmYWN0"
+    artifact = {
+        "type": "artifact",
+        "filename": "secret.md",
+        "media_type": "text/markdown",
+        "content": encoded,
+        "nested": {"base64": encoded},
+    }
+    malformed = {
+        "type": "artifact",
+        "filename": "broken.bin",
+        "media_type": "application/octet-stream",
+        "content": "%%%not-base64%%%",
+        "sha256": "reported-digest",
+    }
+    snapshot = report.scenarios[0].run.initial_snapshot.model_copy(
+        update={"artifacts": (artifact, malformed)}
+    )
+    step = (
+        report.scenarios[0]
+        .run.steps[0]
+        .model_copy(update={"artifacts": (artifact,), "before": snapshot, "after": snapshot})
+    )
+    run = report.scenarios[0].run.model_copy(
+        update={
+            "steps": (step,),
+            "initial_snapshot": snapshot,
+            "final_snapshot": snapshot,
+            "artifacts": (artifact,),
+        }
+    )
+    scenario = report.scenarios[0].model_copy(update={"run": run})
+    report_with_artifacts = report.model_copy(update={"scenarios": (scenario,)})
+    original = report_with_artifacts.model_dump(mode="json")
+    redacted = json.loads(canonical_json(report_with_artifacts))
+
+    assert encoded not in json.dumps(redacted)
+    assert report_with_artifacts.model_dump(mode="json") == original
+    expected = {
+        "filename": "secret.md",
+        "media_type": "text/markdown",
+        "nested": {
+            "sha256": "4036bf69a091b47f036f00a807e20af7201bccb6e2a13e418852a3fd3a8b88aa",
+            "size": 15,
+        },
+        "sha256": "4036bf69a091b47f036f00a807e20af7201bccb6e2a13e418852a3fd3a8b88aa",
+        "size": 15,
+        "type": "artifact",
+    }
+    for location in (
+        redacted["scenarios"][0]["run"]["artifacts"][0],
+        redacted["scenarios"][0]["run"]["steps"][0]["artifacts"][0],
+        redacted["scenarios"][0]["run"]["initial_snapshot"]["artifacts"][0],
+    ):
+        assert location == expected
+    broken = redacted["scenarios"][0]["run"]["initial_snapshot"]["artifacts"][1]
+    assert broken == {
+        "filename": "broken.bin",
+        "integrity": "unavailable",
+        "media_type": "application/octet-stream",
+        "sha256": "reported-digest",
+        "size": None,
+        "type": "artifact",
+    }
 
 
 def test_junit_replaces_invalid_xml_controls_in_attributes_and_text(tmp_path: Path) -> None:

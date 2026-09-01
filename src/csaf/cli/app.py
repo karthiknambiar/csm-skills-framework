@@ -35,6 +35,7 @@ from csaf.simulations.reporting import (
     SIMULATION_EPOCH,
     SimulationScenarioReport,
     SimulationSuiteReport,
+    validate_replay_argv_safety,
     write_report_files,
 )
 from csaf.skills import Artifact
@@ -129,7 +130,9 @@ def _replay_argv(
     ]
     if fixture_root is not None:
         arguments.extend(["--fixture-root", str(fixture_root.resolve())])
-    return tuple(arguments)
+    replay_argv = tuple(arguments)
+    validate_replay_argv_safety(replay_argv)
+    return replay_argv
 
 
 @office_app.command("doctor")
@@ -232,9 +235,24 @@ def simulate(
         selected = tuple(scenarios_by_id[item] for item in requested) if requested else loaded
         if seed is not None and len(selected) != 1:
             raise ValueError("--seed requires exactly one selected scenario")
+        prepared = tuple(
+            (
+                configured.model_copy(update={"seed": seed}) if seed is not None else configured,
+                _replay_argv(
+                    dataset,
+                    configured.id,
+                    seed if seed is not None else configured.seed,
+                    fixture_root,
+                ),
+            )
+            for configured in selected
+        )
     except (OSError, SimulationDatasetError, ValidationError, ValueError) as error:
         message = (
-            str(error)
+            "simulation replay configuration is unsafe"
+            if isinstance(error, ValueError)
+            and str(error) == "simulation replay configuration is unsafe"
+            else str(error)
             if isinstance(error, ValueError) and not isinstance(error, SimulationDatasetError)
             else "unable to load simulation dataset"
         )
@@ -245,10 +263,7 @@ def simulate(
         results: list[SimulationScenarioReport] = []
         with tempfile.TemporaryDirectory(prefix="csaf-simulate-") as temporary_root:
             run_root = Path(temporary_root)
-            for index, configured in enumerate(selected, start=1):
-                effective = (
-                    configured.model_copy(update={"seed": seed}) if seed is not None else configured
-                )
+            for index, (effective, replay_argv) in enumerate(prepared, start=1):
                 with SimulationWorld.create(
                     run_root / f"scenario-{index}", SIMULATION_EPOCH, effective.seed
                 ) as world:
@@ -262,13 +277,7 @@ def simulate(
                         run=run,
                         grade=grade,
                         passed=run.success and grade.passed,
-                        replay_argv=_replay_argv(
-                            dataset,
-                            effective.id,
-                            effective.seed,
-                            fixture_root,
-                        ),
-                        replay_command="structured argv; see replay_argv",
+                        replay_argv=replay_argv,
                     )
                 )
         passed_count = sum(result.passed for result in results)

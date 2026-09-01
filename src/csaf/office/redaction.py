@@ -40,7 +40,7 @@ _SIMPLE_UNC_PATH = re.compile(r"(?<![\\\w])\\\\[^\s,;:\"'<>|]+(?:\\[^\s,;:\"'<>|
 _SIMPLE_POSIX_PATH = re.compile(r"(?<![:/\w])/(?:[^/\s,;:\"'<>|]+/)*[^/\s,;:\"'<>|]+")
 
 
-def redact_officecli_message(message: str) -> str:
+def redact_officecli_message(message: str, *, redact_paths: bool = True) -> str:
     """Remove local paths and credential-shaped values from diagnostic text."""
 
     redacted = _CREDENTIAL_URL.sub("<redacted-credential>", message)
@@ -49,6 +49,8 @@ def redact_officecli_message(message: str) -> str:
     redacted = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted-secret>", redacted)
     for credential_pattern in _CREDENTIAL_VALUES:
         redacted = credential_pattern.sub("<redacted-secret>", redacted)
+    if not redact_paths:
+        return redacted
     for path_pattern in (
         _DOUBLE_QUOTED_PATH,
         _SINGLE_QUOTED_PATH,

@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from csaf.cli.app import app
@@ -209,3 +210,48 @@ def test_replay_argv_preserves_metacharacters_without_relpath(tmp_path: Path) ->
         0
     ]["replay_argv"]
     assert argv[2] == str(dataset.resolve())
+
+
+def test_simulate_rejects_sensitive_replay_locators_without_emitting_them(tmp_path: Path) -> None:
+    unsafe_dataset = tmp_path / "owner@example.test"
+    _write_dataset(unsafe_dataset, _scenario("first"))
+    fixture_root = tmp_path / "api_key=topsecret"
+    fixture_root.mkdir()
+    report_dir = tmp_path / "reports"
+
+    result = runner.invoke(
+        app,
+        [
+            "simulate",
+            str(unsafe_dataset),
+            "--fixture-root",
+            str(fixture_root),
+            "--report-dir",
+            str(report_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.output == "Error: simulation replay configuration is unsafe\n"
+    assert "owner@example.test" not in result.output
+    assert "topsecret" not in result.output
+    assert not report_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "unsafe_locator",
+    ["Bearer abcdef.ghijkl.mnopqr", "aaaa.bbbb.cccc"],
+)
+def test_simulate_rejects_bearer_and_jwt_fixture_locators(
+    tmp_path: Path, unsafe_locator: str
+) -> None:
+    dataset = tmp_path / "scenarios"
+    _write_dataset(dataset, _scenario("first"))
+    fixture_root = tmp_path / unsafe_locator
+    fixture_root.mkdir()
+
+    result = runner.invoke(app, ["simulate", str(dataset), "--fixture-root", str(fixture_root)])
+
+    assert result.exit_code == 2
+    assert result.output == "Error: simulation replay configuration is unsafe\n"
+    assert unsafe_locator not in result.output

@@ -41,6 +41,9 @@ _SENSITIVE_FIELD = re.compile(
 _CONTENT_FIELD = re.compile(r"(?i)(?:content|payload|base64|data)")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*")
+_SENSITIVE_REPLAY_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:password|secret|token|credential|authorization|api[_-]?key)\s*[:=]\s*\S+"
+)
 _JWT = re.compile(
     r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?![A-Za-z0-9_-])"
 )
@@ -99,19 +102,19 @@ class SimulationScenarioReport(BaseModel):
     run: SimulationRun
     grade: SimulationGrade
     passed: bool
-    replay_argv: tuple[str, ...] = ("csaf", "simulate")
-    replay_command: str | None = None
+    replay_argv: tuple[str, ...]
 
     @field_validator("replay_argv")
     @classmethod
     def validate_replay_argv(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(
-            not item or _CONTROL.search(item) or _BEARER.search(item) or _JWT.search(item)
-            for item in value
-        ):
+        try:
+            validate_replay_argv_safety(value)
+        except ValueError:
             raise ValueError("replay argv contains an unsafe locator")
-        if value[:2] != ("csaf", "simulate"):
+        if len(value) < 3 or value[:2] != ("csaf", "simulate"):
             raise ValueError("replay argv must invoke csaf simulate")
+        if value[2].startswith("-"):
+            raise ValueError("replay argv must include a dataset locator")
         return value
 
     @model_validator(mode="after")
@@ -122,6 +125,26 @@ class SimulationScenarioReport(BaseModel):
             raise ValueError("scenario report seeds must match")
         if self.passed is not (self.run.success and self.grade.passed):
             raise ValueError("scenario report passed must match run and grade")
+        scenario_positions = [
+            index for index, argument in enumerate(self.replay_argv) if argument == "--scenario"
+        ]
+        seed_positions = [
+            index for index, argument in enumerate(self.replay_argv) if argument == "--seed"
+        ]
+        if (
+            len(scenario_positions) != 1
+            or any(argument.startswith("--scenario=") for argument in self.replay_argv)
+            or scenario_positions[0] + 1 >= len(self.replay_argv)
+            or self.replay_argv[scenario_positions[0] + 1] != self.scenario_id
+        ):
+            raise ValueError("replay argv must include one matching --scenario")
+        if (
+            len(seed_positions) != 1
+            or any(argument.startswith("--seed=") for argument in self.replay_argv)
+            or seed_positions[0] + 1 >= len(self.replay_argv)
+            or self.replay_argv[seed_positions[0] + 1] != str(self.seed)
+        ):
+            raise ValueError("replay argv must include one matching --seed")
         return self
 
 
@@ -160,6 +183,27 @@ def _redact_text(value: str) -> str:
     return _EMAIL.sub("<redacted-email>", redacted)
 
 
+def _safe_replay_argument(value: str) -> bool:
+    """Reject replay data that report redaction would alter for secrecy reasons."""
+
+    return not (
+        not value
+        or _CONTROL.search(value)
+        or _EMAIL.search(value)
+        or _BEARER.search(value)
+        or _JWT.search(value)
+        or _SENSITIVE_REPLAY_ASSIGNMENT.search(value)
+        or redact_officecli_message(value, redact_paths=False) != value
+    )
+
+
+def validate_replay_argv_safety(value: tuple[str, ...]) -> None:
+    """Raise a sanitized error when replay evidence contains a secret-shaped value."""
+
+    if any(not _safe_replay_argument(item) for item in value):
+        raise ValueError("simulation replay configuration is unsafe")
+
+
 def _xml_text(value: object) -> str:
     """Return redacted text restricted to XML 1.0-valid code points."""
 
@@ -175,9 +219,9 @@ def _content_summary(value: object) -> dict[str, object]:
             padded = value + "=" * (-len(value) % 4)
             raw = base64.b64decode(padded, altchars=b"-_", validate=True)
         except (ValueError, binascii.Error):
-            raw = value.encode("utf-8")
+            return {"integrity": "unavailable", "size": None, "sha256": None}
     if raw is None:
-        return {"size": None, "sha256": None}
+        return {"integrity": "unavailable", "size": None, "sha256": None}
     return {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
@@ -199,7 +243,9 @@ def _redact_value(value: object, *, key: str | None = None) -> object:
             if _CONTENT_FIELD.fullmatch(name):
                 summary = _content_summary(child_value)
                 result.setdefault("sha256", summary["sha256"])
-                result.setdefault("size", summary["size"])
+                result["size"] = summary["size"]
+                if "integrity" in summary:
+                    result.setdefault("integrity", summary["integrity"])
                 continue
             result[name] = _redact_value(child_value, key=name)
         return result
