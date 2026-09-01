@@ -320,13 +320,19 @@ def _no_cross_customer_data(
     )
     if not _aggregate_is_safe(run.outputs, output_steps, customers, step_id):
         return False
-    if not _aggregate_is_safe(run.serialized_outputs, output_steps, customers, step_id):
+    if not _serialized_outputs_are_safe(run.serialized_outputs, output_steps, customers, step_id):
         return False
     if run.last_output is not None:
-        if not output_steps or (step_id is not None and output_steps[-1][0].id != step_id):
+        if not output_steps:
             if len(customers) > 1:
                 return False
-        elif not _evidence_is_safe(run.last_output, output_steps[-1][1], customers):
+        elif step_id is None and not _evidence_is_safe(
+            run.last_output, output_steps[-1][1], customers
+        ):
+            return False
+        elif step_id == output_steps[-1][0].id and not _evidence_is_safe(
+            run.last_output, output_steps[-1][1], customers
+        ):
             return False
 
     artifacts = tuple((step, customer) for step, customer in all_targets for _ in step.artifacts)
@@ -349,6 +355,52 @@ def _aggregate_is_safe(
         if not _evidence_is_safe(value, customer, customers):
             return False
     return True
+
+
+def _serialized_outputs_are_safe(
+    values: Sequence[str],
+    origins: Sequence[tuple[StepResult, str | None]],
+    customers: set[str],
+    step_id: str | None,
+) -> bool:
+    if len(values) != len(origins):
+        if len(customers) > 1:
+            return False
+        customer = next(iter(customers))
+        return all(
+            _evidence_is_safe(_parse_canonical_json(value), customer, customers) for value in values
+        )
+    for value, (step, customer) in zip(values, origins, strict=True):
+        if step_id is not None and step.id != step_id:
+            continue
+        if not _evidence_is_safe(_parse_canonical_json(value), customer, customers):
+            return False
+    return True
+
+
+def _parse_canonical_json(value: str) -> object:
+    def no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError("serialized output has duplicate keys")
+            result[key] = item
+        return result
+
+    def reject_non_finite(_: str) -> object:
+        raise ValueError("serialized output has non-finite values")
+
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=no_duplicate_keys,
+            parse_constant=reject_non_finite,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("serialized output is invalid") from error
+    if _canonical_json(parsed) != value:
+        raise ValueError("serialized output is not canonical")
+    return parsed
 
 
 def _artifacts_are_safe(

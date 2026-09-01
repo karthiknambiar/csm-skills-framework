@@ -328,3 +328,50 @@ def test_cross_customer_fails_closed_for_targetless_step_in_multi_customer_run(t
         .grade(scenario, run.model_copy(update={"steps": (targetless,)}))
         .passed
     )
+
+
+@pytest.mark.parametrize(
+    "serialized",
+    [
+        '{"customer_id":"globex"}',
+        "{",
+        '{"customer_id":"acme","customer_id":"globex"}',
+        '{"score":NaN}',
+    ],
+)
+def test_cross_customer_parses_serialized_outputs_strictly(tmp_path, serialized):
+    scenario = _scenario([{"type": "no_cross_customer_data"}])
+    run = _run(tmp_path, scenario).model_copy(update={"serialized_outputs": (serialized,)})
+
+    assert not DeterministicGrader().grade(scenario, run).passed
+
+
+def test_scoped_cross_customer_ignores_later_customer_evidence(tmp_path):
+    steps = [
+        {
+            "id": "first",
+            "type": "run_skill",
+            "skill": "account-brief",
+            "input": {"customer_id": "acme"},
+        },
+        {
+            "id": "second",
+            "type": "run_skill",
+            "skill": "account-brief",
+            "input": {"customer_id": "globex"},
+        },
+    ]
+    scenario = _scenario(
+        [{"type": "no_cross_customer_data", "step_id": "first"}],
+        customers=("acme", "globex"),
+        steps=steps,
+    )
+    run = _run(tmp_path, scenario)
+
+    assert DeterministicGrader().grade(scenario, run).passed
+    leaked = run.steps[0].model_copy(update={"output": {"customer_id": "globex"}})
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"steps": (leaked, run.steps[1])}))
+        .passed
+    )
