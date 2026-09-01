@@ -375,3 +375,29 @@ def test_scoped_cross_customer_ignores_later_customer_evidence(tmp_path):
         .grade(scenario, run.model_copy(update={"steps": (leaked, run.steps[1])}))
         .passed
     )
+
+
+def test_cross_customer_ignores_base64_text_in_binary_artifacts(tmp_path):
+    scenario = _scenario([{"type": "no_cross_customer_data"}], customers=("acme", "globex"))
+    run = _run(tmp_path, scenario)
+    binary = dict(run.artifacts[0])
+    binary["content"] = "globex=="
+
+    assert (
+        DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"artifacts": (binary,)}))
+        .passed
+    )
+
+
+def test_cross_customer_scans_decoded_utf8_artifact_content(tmp_path):
+    scenario = _scenario([{"type": "no_cross_customer_data"}], customers=("acme", "globex"))
+    run = _run(tmp_path, scenario)
+    text = dict(run.artifacts[0])
+    text["content"] = "R2xvYmV4"
+
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"artifacts": (text,)}))
+        .passed
+    )

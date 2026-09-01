@@ -429,7 +429,10 @@ def _evidence_is_safe(value: object, customer: str | None, customers: set[str]) 
 
 
 def _artifact_is_safe(artifact: object, customer: str | None, customers: set[str]) -> bool:
-    if not isinstance(artifact, Mapping) or not _evidence_is_safe(artifact, customer, customers):
+    if not isinstance(artifact, Mapping):
+        return False
+    metadata = {key: value for key, value in artifact.items() if key != "content"}
+    if not _evidence_is_safe(metadata, customer, customers):
         return False
     forbidden = set() if customer is None else customers - {customer}
     return not _artifact_text_contains_customer((artifact,), forbidden)
@@ -487,8 +490,12 @@ def _artifact_text_contains_customer(
         if not isinstance(content, str):
             return True
         try:
-            text = base64.b64decode(content, validate=True).decode("utf-8")
-        except (binascii.Error, UnicodeError, ValueError):
+            decoded = base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError):
+            return True
+        try:
+            text = decoded.decode("utf-8")
+        except UnicodeError:
             continue
         if _contains_customer_identifier(text, identifiers):
             return True
