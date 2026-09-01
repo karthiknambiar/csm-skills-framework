@@ -1,6 +1,7 @@
 """Deterministic scenario execution with failure-preserving evidence."""
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -393,7 +394,18 @@ class JourneyRunner:
     def _canonical_artifacts(
         self, artifacts: tuple[Artifact, ...]
     ) -> tuple[dict[str, object], ...]:
-        return tuple(_json_value(self._world.canonical_result(artifact)) for artifact in artifacts)
+        canonical: list[dict[str, object]] = []
+        for artifact in artifacts:
+            value = _json_value(self._world.canonical_result(artifact))
+            if not isinstance(value, dict):  # pragma: no cover
+                raise TypeError("canonical artifact must be an object")
+            canonical.append(
+                {
+                    **value,
+                    "sha256": hashlib.sha256(artifact.content).hexdigest(),
+                }
+            )
+        return tuple(canonical)
 
     @staticmethod
     def _matches_expected_error(step: object, error_type: str, error_message: str) -> bool:

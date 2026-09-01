@@ -158,9 +158,11 @@ def _target_output(step_id: str | None, run: SimulationRun) -> object:
 
 
 def _target_artifacts(step_id: str | None, run: SimulationRun) -> Sequence[Mapping[str, object]]:
-    value: object = (
-        run.artifacts if step_id is None else (_target_step(step_id, run) or _MISSING).artifacts
-    )
+    if step_id is None:
+        value: object = run.artifacts
+    else:
+        step = _target_step(step_id, run)
+        value = () if step is None else step.artifacts
     if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
         return ()
     return tuple(item for item in value if isinstance(item, Mapping))
@@ -220,7 +222,10 @@ def _artifact_is_valid(artifact: Mapping[str, object]) -> bool:
     filename = artifact.get("filename")
     media_type = artifact.get("media_type")
     content = artifact.get("content")
-    if not all(isinstance(value, str) for value in (artifact_type, filename, media_type, content)):
+    digest = artifact.get("sha256")
+    if not all(
+        isinstance(value, str) for value in (artifact_type, filename, media_type, content, digest)
+    ):
         return False
     expected = _ARTIFACT_FORMATS.get(artifact_type)
     if expected is None or not _safe_basename(filename):
@@ -232,7 +237,9 @@ def _artifact_is_valid(artifact: Mapping[str, object]) -> bool:
         decoded = base64.b64decode(content, validate=True)
     except (binascii.Error, ValueError):
         return False
-    return bool(hashlib.sha256(decoded).hexdigest())
+    if not decoded or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    return hashlib.sha256(decoded).hexdigest() == digest
 
 
 def _safe_basename(filename: str) -> bool:
@@ -285,21 +292,95 @@ def _no_cross_customer_data(
     step_id: str | None, scenario: SimulationScenario, run: SimulationRun
 ) -> bool:
     customers = set(scenario.customers)
-    for update in (*run.updates, *(update for step in run.steps for update in step.updates)):
-        if not isinstance(update, Mapping) or update.get("customer_id") not in customers:
+    all_targets = _target_steps_for_boundary(None, scenario, run)
+    targets = tuple(
+        (step, customer) for step, customer in all_targets if step_id is None or step.id == step_id
+    )
+    if not targets:
+        return len(customers) == 1
+    if len(customers) > 1 and any(customer is None for _, customer in targets):
+        return False
+
+    for step, customer in targets:
+        if not _evidence_is_safe(step.output, customer, customers):
+            return False
+        if not _aggregate_is_safe(step.updates, ((step, customer),), customers):
+            return False
+        if not _artifacts_are_safe(step.artifacts, ((step, customer),), customers):
             return False
 
-    targets = _target_steps_for_boundary(step_id, scenario, run)
-    for step, target_customer in targets:
-        if target_customer is None:
-            continue
-        forbidden = customers - {target_customer}
-        evidence = (step.output, step.updates, step.artifacts)
-        if _contains_customer_identifier(evidence, forbidden, target_customer):
+    updates = tuple((step, customer) for step, customer in all_targets for _ in step.updates)
+    if not _aggregate_is_safe(run.updates, updates, customers, step_id):
+        return False
+
+    output_steps = tuple(
+        (step, customer)
+        for step, customer in all_targets
+        if step.type == "run_skill" and step.success and not step.expected_error
+    )
+    if not _aggregate_is_safe(run.outputs, output_steps, customers, step_id):
+        return False
+    if not _aggregate_is_safe(run.serialized_outputs, output_steps, customers, step_id):
+        return False
+    if run.last_output is not None:
+        if not output_steps or (step_id is not None and output_steps[-1][0].id != step_id):
+            if len(customers) > 1:
+                return False
+        elif not _evidence_is_safe(run.last_output, output_steps[-1][1], customers):
             return False
-        if _artifact_text_contains_customer(step.artifacts, forbidden):
+
+    artifacts = tuple((step, customer) for step, customer in all_targets for _ in step.artifacts)
+    return _artifacts_are_safe(run.artifacts, artifacts, customers, step_id)
+
+
+def _aggregate_is_safe(
+    values: Sequence[object],
+    origins: Sequence[tuple[StepResult, str | None]],
+    customers: set[str],
+    step_id: str | None = None,
+) -> bool:
+    if len(values) != len(origins):
+        return len(customers) == 1 and all(
+            _evidence_is_safe(value, next(iter(customers)), customers) for value in values
+        )
+    for value, (step, customer) in zip(values, origins, strict=True):
+        if step_id is not None and step.id != step_id:
+            continue
+        if not _evidence_is_safe(value, customer, customers):
             return False
     return True
+
+
+def _artifacts_are_safe(
+    artifacts: Sequence[object],
+    origins: Sequence[tuple[StepResult, str | None]],
+    customers: set[str],
+    step_id: str | None = None,
+) -> bool:
+    if len(artifacts) != len(origins):
+        if len(customers) > 1:
+            return False
+        origin = next(iter(customers))
+        return all(_artifact_is_safe(artifact, origin, customers) for artifact in artifacts)
+    for artifact, (step, customer) in zip(artifacts, origins, strict=True):
+        if step_id is not None and step.id != step_id:
+            continue
+        if not _artifact_is_safe(artifact, customer, customers):
+            return False
+    return True
+
+
+def _evidence_is_safe(value: object, customer: str | None, customers: set[str]) -> bool:
+    if customer is None:
+        return len(customers) == 1 and not _contains_customer_identifier(value, set())
+    return not _contains_customer_identifier(value, customers - {customer}, customer)
+
+
+def _artifact_is_safe(artifact: object, customer: str | None, customers: set[str]) -> bool:
+    if not isinstance(artifact, Mapping) or not _evidence_is_safe(artifact, customer, customers):
+        return False
+    forbidden = set() if customer is None else customers - {customer}
+    return not _artifact_text_contains_customer((artifact,), forbidden)
 
 
 def _target_steps_for_boundary(

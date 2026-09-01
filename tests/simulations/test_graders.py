@@ -1,5 +1,7 @@
 """Hard-contract tests for deterministic simulation grading."""
 
+import base64
+import hashlib
 from datetime import UTC, datetime
 
 import pytest
@@ -253,3 +255,76 @@ def test_grade_models_are_strict_frozen_and_json_safe(tmp_path):
     with pytest.raises(ValidationError):
         grade.findings[0].message = "changed"
     assert type(grade).model_validate_json(grade.model_dump_json()) == grade
+
+
+def test_artifact_target_aborted_before_execution_fails_without_crashing(tmp_path):
+    scenario = _scenario(
+        [{"type": "artifact_types", "step_id": "brief", "values": ["markdown"]}],
+        steps=[
+            {
+                "id": "fail",
+                "type": "run_skill",
+                "skill": "missing-skill",
+                "input": {"customer_id": "acme"},
+            },
+            {
+                "id": "brief",
+                "type": "run_skill",
+                "skill": "account-brief",
+                "input": {"customer_id": "acme"},
+            },
+        ],
+    )
+    grade = DeterministicGrader().grade(scenario, _run(tmp_path, scenario))
+
+    assert [finding.code for finding in grade.findings] == ["artifact_types", "execution"]
+    assert not grade.findings[0].passed
+
+
+def test_runner_artifacts_include_digest_and_grader_requires_it(tmp_path):
+    scenario = _scenario([{"type": "artifact_types", "values": ["markdown"]}])
+    run = _run(tmp_path, scenario)
+
+    assert (
+        run.artifacts[0]["sha256"]
+        == hashlib.sha256(base64.b64decode(run.artifacts[0]["content"], validate=True)).hexdigest()
+    )
+    tampered = dict(run.artifacts[0])
+    tampered["sha256"] = "0" * 64
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"artifacts": (tampered,)}))
+        .passed
+    )
+
+
+@pytest.mark.parametrize("aggregate", ["outputs", "serialized_outputs", "artifacts"])
+def test_cross_customer_rejects_aggregate_only_leaks(tmp_path, aggregate):
+    scenario = _scenario([{"type": "no_cross_customer_data"}], customers=("acme", "globex"))
+    run = _run(tmp_path, scenario)
+    if aggregate == "outputs":
+        run = run.model_copy(update={"outputs": ({"customer_id": "globex"},)})
+    elif aggregate == "serialized_outputs":
+        run = run.model_copy(update={"serialized_outputs": ('{"customer_id":"globex"}',)})
+    else:
+        artifact = dict(run.artifacts[0])
+        artifact["content"] = "R2xvYmV4"
+        run = run.model_copy(update={"artifacts": (artifact,)})
+
+    assert not DeterministicGrader().grade(scenario, run).passed
+
+
+def test_cross_customer_fails_closed_for_targetless_step_in_multi_customer_run(tmp_path):
+    scenario = _scenario(
+        [{"type": "no_cross_customer_data"}],
+        customers=("acme", "globex"),
+        steps=[{"id": "tick", "type": "advance_time", "seconds": 1}],
+    )
+    run = _run(tmp_path, scenario)
+    targetless = run.steps[0].model_copy(update={"output": {"customer_id": "globex"}})
+
+    assert (
+        not DeterministicGrader()
+        .grade(scenario, run.model_copy(update={"steps": (targetless,)}))
+        .passed
+    )
