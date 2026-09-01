@@ -321,10 +321,14 @@ def _no_cross_customer_data(
             return False
         if not _artifacts_are_safe(step.artifacts, ((step, customer),), customers):
             return False
-    for step, customer, records in additions:
+    for step, customer, records, artifact_delta in additions:
         if step_id is not None and step.id != step_id:
             continue
         if not _evidence_is_safe(records, customer, customers):
+            return False
+        if not _artifacts_are_safe(
+            artifact_delta, ((step, customer),) * len(artifact_delta), customers
+        ):
             return False
 
     updates = tuple((step, customer) for step, customer in all_targets for _ in step.updates)
@@ -459,7 +463,9 @@ def _artifact_is_safe(artifact: object, customer: str | None, customers: set[str
 def _target_steps_for_boundary(
     step_id: str | None, scenario: SimulationScenario, run: SimulationRun
 ) -> tuple[tuple[StepResult, str | None], ...]:
-    declared = {step.id: step for step in scenario.steps if step.id is not None}
+    declared = {
+        step.id or f"step-{index}": step for index, step in enumerate(scenario.steps, start=1)
+    }
     steps = (step for step in run.steps if step_id is None or step.id == step_id)
     result = []
     for step in steps:
@@ -481,7 +487,18 @@ def _reconcile_tenant_evidence(
     scenario: SimulationScenario,
     run: SimulationRun,
     targets: Sequence[tuple[StepResult, str | None]],
-) -> tuple[tuple[StepResult, str | None, tuple[Mapping[str, object], ...]], ...] | None:
+) -> (
+    tuple[
+        tuple[
+            StepResult,
+            str | None,
+            tuple[Mapping[str, object], ...],
+            tuple[Mapping[str, object], ...],
+        ],
+        ...,
+    ]
+    | None
+):
     declared_ids = tuple(step.id or f"step-{index}" for index, step in enumerate(scenario.steps, 1))
     actual_ids = tuple(step.id for step in run.steps)
     if not actual_ids or actual_ids != declared_ids[: len(actual_ids)]:
@@ -496,7 +513,14 @@ def _reconcile_tenant_evidence(
     if run.initial_snapshot != run.steps[0].before or run.final_snapshot != run.steps[-1].after:
         return None
 
-    additions: list[tuple[StepResult, str | None, tuple[Mapping[str, object], ...]]] = []
+    additions: list[
+        tuple[
+            StepResult,
+            str | None,
+            tuple[Mapping[str, object], ...],
+            tuple[Mapping[str, object], ...],
+        ]
+    ] = []
     previous = run.initial_snapshot
     for step, customer in targets:
         if step.before != previous:
@@ -504,12 +528,94 @@ def _reconcile_tenant_evidence(
         delta = _memory_additions(step.before.memory, step.after.memory)
         if delta is None or not _same_records(delta, step.updates):
             return None
-        additions.append((step, customer, delta))
+        artifact_delta = _artifact_snapshot_delta(step.before.artifacts, step.after.artifacts)
+        if artifact_delta is None or not _same_artifact_effects(artifact_delta, step.artifacts):
+            return None
+        additions.append((step, customer, delta, artifact_delta))
         previous = step.after
-    flattened = tuple(record for _, _, records in additions for record in records)
+    flattened = tuple(record for _, _, records, _ in additions for record in records)
     if not _same_records(flattened, run.updates):
         return None
+    flattened_artifacts = tuple(artifact for step, _ in targets for artifact in step.artifacts)
+    if not _same_artifact_sequence(flattened_artifacts, run.artifacts):
+        return None
     return tuple(additions)
+
+
+def _artifact_snapshot_delta(
+    before: Sequence[Mapping[str, object]], after: Sequence[Mapping[str, object]]
+) -> tuple[Mapping[str, object], ...] | None:
+    before_by_filename = _snapshot_artifacts_by_filename(before)
+    after_by_filename = _snapshot_artifacts_by_filename(after)
+    if before_by_filename is None or after_by_filename is None:
+        return None
+    if set(before_by_filename) - set(after_by_filename):
+        return None
+    changed: list[Mapping[str, object]] = []
+    for artifact in after:
+        filename = artifact.get("filename")
+        if not isinstance(filename, str):
+            return None
+        previous = before_by_filename.get(filename)
+        if previous is None or _artifact_content(previous) != _artifact_content(artifact):
+            changed.append(artifact)
+    return tuple(changed)
+
+
+def _snapshot_artifacts_by_filename(
+    artifacts: Sequence[Mapping[str, object]],
+) -> dict[str, Mapping[str, object]] | None:
+    result: dict[str, Mapping[str, object]] = {}
+    for artifact in artifacts:
+        filename = artifact.get("filename")
+        if not isinstance(filename, str) or not filename or filename in result:
+            return None
+        try:
+            _artifact_content(artifact)
+        except ValueError:
+            return None
+        result[filename] = artifact
+    return result
+
+
+def _artifact_content(artifact: Mapping[str, object]) -> bytes:
+    content = artifact.get("content")
+    if not isinstance(content, str):
+        raise ValueError("artifact content is invalid")
+    return _decode_artifact_content(content)
+
+
+def _same_artifact_effects(
+    snapshots: Sequence[Mapping[str, object]], reported: Sequence[Mapping[str, object]]
+) -> bool:
+    snapshot_by_filename = _snapshot_artifacts_by_filename(snapshots)
+    reported_by_filename = _snapshot_artifacts_by_filename(reported)
+    return (
+        snapshot_by_filename is not None
+        and reported_by_filename is not None
+        and set(snapshot_by_filename) == set(reported_by_filename)
+        and all(
+            _artifact_content(snapshot_by_filename[filename])
+            == _artifact_content(reported_by_filename[filename])
+            for filename in snapshot_by_filename
+        )
+    )
+
+
+def _same_artifact_sequence(
+    expected: Sequence[Mapping[str, object]], actual: Sequence[Mapping[str, object]]
+) -> bool:
+    if len(expected) != len(actual):
+        return False
+    try:
+        return all(
+            isinstance(left.get("filename"), str)
+            and left.get("filename") == right.get("filename")
+            and _artifact_content(left) == _artifact_content(right)
+            for left, right in zip(expected, actual, strict=True)
+        )
+    except ValueError:
+        return False
 
 
 def _memory_additions(
