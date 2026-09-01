@@ -1,6 +1,8 @@
 """Typer command-line interface for CSAF."""
 
 import json
+import shlex
+import tempfile
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -23,6 +25,19 @@ from csaf.evaluations.loader import GoldenDatasetError
 from csaf.office import OfficeCLIDoctor, OfficeCLIError
 from csaf.schemas import MemoryKind, MemoryQuery
 from csaf.setup.cli import setup_app
+from csaf.simulations import (
+    DeterministicGrader,
+    JourneyRunner,
+    SimulationDatasetError,
+    SimulationWorld,
+    load_scenarios,
+)
+from csaf.simulations.reporting import (
+    SIMULATION_EPOCH,
+    SimulationScenarioReport,
+    SimulationSuiteReport,
+    write_report_files,
+)
 from csaf.skills import Artifact
 from csaf.skills.builtin import QBRSkill
 from csaf.skills.errors import SkillError, SkillExecutionError
@@ -79,11 +94,33 @@ def initialize(
 ) -> None:
     """Configure a local CSAF runtime for this invocation."""
 
-    if context.invoked_subcommand == "setup":
+    if context.invoked_subcommand in {"setup", "simulate"}:
         context.obj = {}
         return
     context.obj = {"runtime": create_runtime(database)}
     context.call_on_close(context.obj["runtime"].memory.close)
+
+
+def _simulation_fixture_root(dataset: Path, explicit_root: Path | None) -> Path:
+    """Choose a local fixture root without exposing filesystem details in errors."""
+
+    root = (
+        explicit_root
+        if explicit_root is not None
+        else (dataset.parent / "fixtures" if dataset.is_file() else dataset / "fixtures")
+    )
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise ValueError("simulation fixture root is unsafe")
+    return root.resolve()
+
+
+def _replay_command(dataset: Path, scenario_id: str, seed: int, fixture_root: Path | None) -> str:
+    """Produce a stable shell-displayable replay command without report destinations."""
+
+    arguments = ["csaf", "simulate", str(dataset), "--scenario", scenario_id, "--seed", str(seed)]
+    if fixture_root is not None:
+        arguments.extend(["--fixture-root", str(fixture_root)])
+    return " ".join(shlex.quote(argument) for argument in arguments)
 
 
 @office_app.command("doctor")
@@ -147,6 +184,104 @@ def evaluate(
         "pass_rate": report.pass_rate,
     }
     _emit(summary)
+    if not report.passed:
+        raise typer.Exit(code=1)
+
+
+@app.command("simulate")
+def simulate(
+    dataset: Annotated[Path, typer.Argument(help="Simulation JSON file or directory.")],
+    scenario: Annotated[
+        list[str] | None,
+        typer.Option("--scenario", help="Run exactly one scenario ID."),
+    ] = None,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Override the seed for one selected scenario."),
+    ] = None,
+    report_dir: Annotated[
+        Path,
+        typer.Option("--report-dir", help="Directory for deterministic simulation reports."),
+    ] = Path("simulation-results"),
+    fixture_root: Annotated[
+        Path | None,
+        typer.Option("--fixture-root", help="Root directory for local connector fixtures."),
+    ] = None,
+) -> None:
+    """Run isolated deterministic customer journeys and write replayable reports."""
+
+    try:
+        loaded = load_scenarios(dataset)
+        fixtures = _simulation_fixture_root(dataset, fixture_root)
+        requested = tuple(scenario or ())
+        if len(set(requested)) != len(requested):
+            raise ValueError("duplicate scenario selection")
+        scenarios_by_id = {item.id: item for item in loaded}
+        unknown = next((item for item in requested if item not in scenarios_by_id), None)
+        if unknown is not None:
+            raise ValueError(f"unknown scenario id: {unknown}")
+        selected = tuple(scenarios_by_id[item] for item in requested) if requested else loaded
+        if seed is not None and len(selected) != 1:
+            raise ValueError("--seed requires exactly one selected scenario")
+    except (OSError, SimulationDatasetError, ValidationError, ValueError) as error:
+        message = (
+            str(error)
+            if isinstance(error, ValueError) and not isinstance(error, SimulationDatasetError)
+            else "unable to load simulation dataset"
+        )
+        typer.echo(f"Error: {message}", err=True)
+        raise typer.Exit(code=2) from error
+
+    try:
+        results: list[SimulationScenarioReport] = []
+        with tempfile.TemporaryDirectory(prefix="csaf-simulate-") as temporary_root:
+            run_root = Path(temporary_root)
+            for index, configured in enumerate(selected, start=1):
+                effective = (
+                    configured.model_copy(update={"seed": seed}) if seed is not None else configured
+                )
+                with SimulationWorld.create(
+                    run_root / f"scenario-{index}", SIMULATION_EPOCH, effective.seed
+                ) as world:
+                    run = JourneyRunner(world, fixture_root=fixtures).run(effective)
+                grade = DeterministicGrader().grade(effective, run)
+                results.append(
+                    SimulationScenarioReport(
+                        scenario_id=effective.id,
+                        scenario_title=effective.title,
+                        seed=effective.seed,
+                        run=run,
+                        grade=grade,
+                        passed=run.success and grade.passed,
+                        replay_command=_replay_command(
+                            dataset, effective.id, effective.seed, fixture_root
+                        ),
+                    )
+                )
+        passed_count = sum(result.passed for result in results)
+        report = SimulationSuiteReport(
+            schema_version=1,
+            started_at=SIMULATION_EPOCH,
+            config={
+                "epoch": "2026-01-01T00:00:00Z",
+                "fixture_root": "explicit" if fixture_root is not None else "dataset-default",
+                "seed_override": seed,
+            },
+            total=len(results),
+            passed_count=passed_count,
+            failed_count=len(results) - passed_count,
+            passed=all(result.passed for result in results),
+            scenarios=tuple(results),
+        )
+        paths = write_report_files(report, report_dir)
+    except Exception as error:
+        typer.echo("Error: simulation infrastructure failure", err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo(
+        f"{report.passed_count}/{report.total} passed; {report.failed_count} failed. "
+        f"Report: {paths[0].parent}"
+    )
     if not report.passed:
         raise typer.Exit(code=1)
 

@@ -3,6 +3,15 @@
 from csaf.simulations.faults import FaultRegistry
 from csaf.simulations.graders import DeterministicGrader
 from csaf.simulations.loader import SimulationDatasetError, load_scenarios
+from csaf.simulations.reporting import (
+    SIMULATION_EPOCH,
+    SimulationScenarioReport,
+    SimulationSuiteReport,
+    canonical_json,
+    render_junit,
+    render_markdown,
+    write_report_files,
+)
 from csaf.simulations.runner import JourneyRunner
 from csaf.simulations.schema import (
     AdvanceTimeStep,
@@ -52,6 +61,9 @@ __all__ = [
     "OutputEqualsExpectation",
     "OutputPresentExpectation",
     "RunSkillStep",
+    "SIMULATION_EPOCH",
+    "SimulationScenarioReport",
+    "SimulationSuiteReport",
     "SeedMemoryStep",
     "SetFaultStep",
     "SimulationDatasetError",
@@ -64,5 +76,9 @@ __all__ = [
     "SimulationStep",
     "SimulationWorld",
     "StepResult",
+    "canonical_json",
     "load_scenarios",
+    "render_junit",
+    "render_markdown",
+    "write_report_files",
 ]
