@@ -24,6 +24,7 @@ from pydantic import (
     Field,
     JsonValue,
     PlainSerializer,
+    field_validator,
     model_validator,
 )
 
@@ -98,7 +99,20 @@ class SimulationScenarioReport(BaseModel):
     run: SimulationRun
     grade: SimulationGrade
     passed: bool
-    replay_command: str = Field(min_length=1)
+    replay_argv: tuple[str, ...] = ("csaf", "simulate")
+    replay_command: str | None = None
+
+    @field_validator("replay_argv")
+    @classmethod
+    def validate_replay_argv(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(
+            not item or _CONTROL.search(item) or _BEARER.search(item) or _JWT.search(item)
+            for item in value
+        ):
+            raise ValueError("replay argv contains an unsafe locator")
+        if value[:2] != ("csaf", "simulate"):
+            raise ValueError("replay argv must invoke csaf simulate")
+        return value
 
     @model_validator(mode="after")
     def validate_identity_and_outcome(self) -> SimulationScenarioReport:
@@ -170,6 +184,8 @@ def _content_summary(value: object) -> dict[str, object]:
 def _redact_value(value: object, *, key: str | None = None) -> object:
     """Build a redacted copy; this never mutates evidence or report models."""
 
+    if key == "replay_argv":
+        return list(value) if isinstance(value, tuple | list) else value
     if key is not None and _CONTENT_FIELD.fullmatch(key):
         return _content_summary(value)
     if key is not None and _SENSITIVE_FIELD.search(key):
@@ -220,13 +236,6 @@ def _table(value: object) -> str:
     )
 
 
-def _fenced_command(command: object) -> list[str]:
-    text = _redact_text(str(command))
-    longest = max((len(match.group()) for match in re.finditer(r"`+", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return [fence, text, fence]
-
-
 def render_markdown(report: SimulationSuiteReport) -> str:
     """Render a concise human-readable report, keeping evidence out of the output."""
 
@@ -262,14 +271,18 @@ def render_markdown(report: SimulationSuiteReport) -> str:
                 f"| {_table(scenario['scenario_id'])} | {_table(finding_text)} | "
                 f"{'PASS' if finding['passed'] else 'FAIL'} |"
             )
-    lines.append("\n## Replay commands")
+    lines.append(
+        "\n## Replay argv vectors\n\nEach array is an argv vector; do not execute it as shell text."
+    )
     for scenario in payload["scenarios"]:
         assert isinstance(scenario, Mapping)
         lines.extend(
             [
                 "",
                 f"### {_table(scenario['scenario_id'])}",
-                *_fenced_command(scenario["replay_command"]),
+                "```json",
+                json.dumps(scenario["replay_argv"], ensure_ascii=False),
+                "```",
             ]
         )
     return "\n".join(lines) + "\n"

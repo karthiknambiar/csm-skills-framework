@@ -116,42 +116,23 @@ def _simulation_fixture_root(dataset: Path, explicit_root: Path | None) -> Path:
     return root.resolve()
 
 
-def _replay_command(
-    dataset: Path,
-    scenario_id: str,
-    seed: int,
-    fixture_root: Path | None,
-    *,
-    replay_cwd: Path,
-) -> str:
-    """Render an executable replay command using vetted paths relative to the invocation cwd."""
-
-    def locator(path: Path) -> str:
-        return os.path.relpath(path.resolve(), replay_cwd.resolve())
+def _replay_argv(
+    dataset: Path, scenario_id: str, seed: int, fixture_root: Path | None
+) -> tuple[str, ...]:
+    """Build a structured replay vector; it is data, never shell text."""
 
     arguments = [
         "csaf",
         "simulate",
-        locator(dataset),
+        str(dataset.resolve()),
         "--scenario",
         scenario_id,
         "--seed",
         str(seed),
     ]
     if fixture_root is not None:
-        arguments.extend(["--fixture-root", locator(fixture_root)])
-    return subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
-
-
-def _replay_cwd(dataset: Path) -> Path:
-    """Use the invocation cwd unless a Windows volume boundary requires the dataset parent."""
-
-    cwd = Path.cwd().resolve()
-    try:
-        os.path.relpath(dataset.resolve(), cwd)
-    except ValueError:
-        return dataset.resolve().parent
-    return cwd
+        arguments.extend(["--fixture-root", str(fixture_root.resolve())])
+    return tuple(arguments)
 
 
 @office_app.command("doctor")
@@ -284,13 +265,13 @@ def simulate(
                         run=run,
                         grade=grade,
                         passed=run.success and grade.passed,
-                        replay_command=_replay_command(
+                        replay_argv=_replay_argv(
                             dataset,
                             effective.id,
                             effective.seed,
                             fixture_root,
-                            replay_cwd=_replay_cwd(dataset),
                         ),
+                        replay_command="structured argv; see replay_argv",
                     )
                 )
         passed_count = sum(result.passed for result in results)

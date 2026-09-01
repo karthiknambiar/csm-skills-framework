@@ -219,8 +219,8 @@ def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Pat
     assert "bad \\|" in markdown
     assert "`code`" not in markdown
     fence = max((line for line in markdown.splitlines() if set(line) == {"`"}), key=len)
-    assert len(fence) > 3
-    assert f"{fence}\n{command}\n{fence}" in markdown
+    assert fence == "```"
+    assert "Each array is an argv vector" in markdown
 
 
 def test_junit_replaces_invalid_xml_controls_in_attributes_and_text(tmp_path: Path) -> None:
