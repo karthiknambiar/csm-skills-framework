@@ -1,6 +1,7 @@
 """Public contracts for deterministic CSAF simulations."""
 
 from csaf.simulations.faults import FaultRegistry
+from csaf.simulations.graders import DeterministicGrader
 from csaf.simulations.loader import SimulationDatasetError, load_scenarios
 from csaf.simulations.runner import JourneyRunner
 from csaf.simulations.schema import (
@@ -10,6 +11,7 @@ from csaf.simulations.schema import (
     ClearFaultsStep,
     FaultName,
     ForbiddenTermExpectation,
+    GradeFinding,
     IngestFixtureStep,
     MemoryCountExpectation,
     MemoryRevisionExpectation,
@@ -21,6 +23,7 @@ from csaf.simulations.schema import (
     SeedMemoryStep,
     SetFaultStep,
     SimulationExpectation,
+    SimulationGrade,
     SimulationRun,
     SimulationScenario,
     SimulationSnapshot,
@@ -34,9 +37,11 @@ __all__ = [
     "ArtifactTypesExpectation",
     "CitationMinimumExpectation",
     "ClearFaultsStep",
+    "DeterministicGrader",
     "FaultName",
     "FaultRegistry",
     "ForbiddenTermExpectation",
+    "GradeFinding",
     "IngestFixtureStep",
     "JourneyRunner",
     "MemoryCountExpectation",
@@ -51,6 +56,7 @@ __all__ = [
     "SetFaultStep",
     "SimulationDatasetError",
     "SimulationExpectation",
+    "SimulationGrade",
     "SimulationRun",
     "SimulationOfficeRenderer",
     "SimulationScenario",

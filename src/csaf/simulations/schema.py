@@ -422,3 +422,25 @@ class SimulationRun(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("run timestamps must include a timezone")
         return value
+
+
+class GradeFinding(BaseModel):
+    """One stable hard-contract result emitted by a deterministic grader."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    code: NonEmptyString
+    passed: bool
+    message: NonEmptyString
+    step_id: NonEmptyString | None = None
+
+
+class SimulationGrade(BaseModel):
+    """Immutable outcome of grading one run against one scenario."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    scenario_id: NonEmptyString
+    seed: StrictInt
+    passed: bool
+    findings: tuple[GradeFinding, ...]
