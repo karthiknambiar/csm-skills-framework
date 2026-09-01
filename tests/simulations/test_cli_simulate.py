@@ -155,3 +155,47 @@ def test_simulate_execution_failure_writes_reports_and_exits_one(tmp_path: Path)
 
     assert result.exit_code == 1
     assert (report_dir / "simulation-report.json").exists()
+
+
+def test_simulate_uses_default_and_explicit_fixture_roots(tmp_path: Path) -> None:
+    dataset = tmp_path / "scenarios"
+    scenario = _scenario("fixture")
+    scenario["steps"] = [
+        {"type": "ingest_fixture", "customer_id": "acme", "fixture": "records.json"}
+    ]
+    scenario["expectations"] = [{"type": "memory_count", "customer_id": "acme", "count": 1}]
+    _write_dataset(dataset, scenario)
+    default_root = dataset / "fixtures"
+    default_root.mkdir()
+    (default_root / "records.json").write_text(
+        '{"records":[{"id":"one","kind":"risk","content":"risk"}]}', encoding="utf-8"
+    )
+    default = runner.invoke(
+        app, ["simulate", str(dataset), "--report-dir", str(tmp_path / "default")]
+    )
+    assert default.exit_code == 0
+    default_argv = json.loads((tmp_path / "default" / "simulation-report.json").read_text())[
+        "scenarios"
+    ][0]["replay_argv"]
+    assert "--fixture-root" not in default_argv
+    explicit_root = tmp_path / "custom-fixtures"
+    explicit_root.mkdir()
+    (explicit_root / "records.json").write_text(
+        '{"records":[{"id":"one","kind":"risk","content":"risk"}]}', encoding="utf-8"
+    )
+    explicit = runner.invoke(
+        app,
+        [
+            "simulate",
+            str(dataset),
+            "--fixture-root",
+            str(explicit_root),
+            "--report-dir",
+            str(tmp_path / "explicit"),
+        ],
+    )
+    assert explicit.exit_code == 0
+    explicit_argv = json.loads((tmp_path / "explicit" / "simulation-report.json").read_text())[
+        "scenarios"
+    ][0]["replay_argv"]
+    assert explicit_argv[-2:] == ["--fixture-root", str(explicit_root.resolve())]
