@@ -1,6 +1,7 @@
 """Deterministic, redacted simulation report coverage."""
 
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_human_serializers_escape_and_redact_without_mutating_report(tmp_path: P
         assert "secret artifact" not in rendered
         assert "content" not in rendered
         assert "Reporting | check" not in rendered
-    assert "<redacted-email>" in markdown
+    assert "&lt;redacted-email&gt;" in markdown
     assert report.model_dump(mode="json") == original
 
 
@@ -173,3 +174,85 @@ def test_report_writer_is_atomic_and_rejects_unsafe_targets(tmp_path: Path) -> N
     blocked.write_text("not a directory", encoding="utf-8")
     with pytest.raises(ValueError, match="report directory is unsafe"):
         write_report_files(report, blocked)
+
+
+def test_serializers_redact_authorization_bearer_and_jwt_recursively(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    secret = "Bearer abcdef.ghijkl.mnopqr"
+    finding = (
+        report.scenarios[0]
+        .grade.findings[0]
+        .model_copy(update={"message": f"Authorization: {secret}"})
+    )
+    step = (
+        report.scenarios[0]
+        .run.steps[0]
+        .model_copy(update={"output": {"headers": {"AUTHORIZATION": secret}}})
+    )
+    scenario = report.scenarios[0].model_copy(
+        update={
+            "run": report.scenarios[0].run.model_copy(update={"steps": (step,)}),
+            "grade": report.scenarios[0].grade.model_copy(update={"findings": (finding,)}),
+        }
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+    rendered = (canonical_json(report).decode(), render_markdown(report), render_junit(report))
+    for value in rendered:
+        assert secret not in value
+        assert "abcdef.ghijkl.mnopqr" not in value
+    assert "<redacted-secret>" in rendered[0]
+    assert "&lt;redacted-secret&gt;" in rendered[1]
+
+
+def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    command = "csaf simulate 'x```y'"
+    scenario = report.scenarios[0].model_copy(
+        update={
+            "scenario_title": "bad | <script> \\ `code`\nnext",
+            "replay_command": command,
+        }
+    )
+    markdown = render_markdown(report.model_copy(update={"scenarios": (scenario,)}))
+    assert "bad | <script>" not in markdown
+    assert "&lt;script&gt;" in markdown
+    assert "bad \\|" in markdown
+    assert "`code`" not in markdown
+    fence = max((line for line in markdown.splitlines() if set(line) == {"`"}), key=len)
+    assert len(fence) > 3
+    assert f"{fence}\n{command}\n{fence}" in markdown
+
+
+def test_junit_replaces_invalid_xml_controls_in_attributes_and_text(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    finding = (
+        report.scenarios[0]
+        .grade.findings[0]
+        .model_copy(update={"code": "bad\x01code", "message": "bad\x02message"})
+    )
+    scenario = report.scenarios[0].model_copy(
+        update={
+            "scenario_id": "bad\x03id",
+            "scenario_title": "bad\x04title",
+            "grade": report.scenarios[0].grade.model_copy(update={"findings": (finding,)}),
+        }
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+    xml = render_junit(report)
+    ElementTree.fromstring(xml)
+    assert "\x01" not in xml and "\x02" not in xml and "\x03" not in xml
+
+
+def test_writer_cleans_temporary_file_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import csaf.simulations.reporting as reporting
+
+    report = _report(tmp_path)
+    destination = tmp_path / "reports"
+    monkeypatch.setattr(
+        reporting.os, "replace", lambda *_: (_ for _ in ()).throw(OSError("blocked"))
+    )
+    with pytest.raises(OSError, match="blocked"):
+        write_report_files(report, destination)
+    assert list(destination.glob(".simulation-report-*")) == []

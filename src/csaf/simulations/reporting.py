@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import html
 import json
 import os
 import re
@@ -34,10 +35,15 @@ SIMULATION_EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
 _SENSITIVE_FIELD = re.compile(
-    r"(?i)(?:password|secret|token|credential|api[_-]?key|content|base64)"
+    r"(?i)(?:password|secret|token|credential|authorization|api[_-]?key|content|base64)"
 )
 _CONTENT_FIELD = re.compile(r"(?i)(?:content|payload|base64|data)")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*")
+_JWT = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?![A-Za-z0-9_-])"
+)
+_XML_INVALID = re.compile(r"[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]")
 
 
 class _FrozenJsonDict(dict[str, object]):
@@ -135,7 +141,15 @@ class SimulationSuiteReport(BaseModel):
 
 def _redact_text(value: str) -> str:
     redacted = redact_officecli_message(value)
+    redacted = _BEARER.sub("Bearer <redacted-secret>", redacted)
+    redacted = _JWT.sub("<redacted-secret>", redacted)
     return _EMAIL.sub("<redacted-email>", redacted)
+
+
+def _xml_text(value: object) -> str:
+    """Return redacted text restricted to XML 1.0-valid code points."""
+
+    return _XML_INVALID.sub("�", _redact_text(str(value)))
 
 
 def _content_summary(value: object) -> dict[str, object]:
@@ -201,7 +215,16 @@ def canonical_json(report: SimulationSuiteReport) -> bytes:
 
 def _table(value: object) -> str:
     text = _CONTROL.sub(" ", _redact_text(str(value))).replace("\r", "").replace("\n", "<br>")
-    return text.replace("|", "\\|")
+    return (
+        html.escape(text, quote=False).replace("\\", "\\\\").replace("|", "\\|").replace("`", "\\`")
+    )
+
+
+def _fenced_command(command: object) -> list[str]:
+    text = _redact_text(str(command))
+    longest = max((len(match.group()) for match in re.finditer(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return [fence, text, fence]
 
 
 def render_markdown(report: SimulationSuiteReport) -> str:
@@ -217,18 +240,15 @@ def render_markdown(report: SimulationSuiteReport) -> str:
             f"{payload['failed_count']} failed"
         ),
         "",
-        "| Scenario | Result | Replay |",
-        "| --- | --- | --- |",
+        "| Scenario | Result |",
+        "| --- | --- |",
     ]
     for scenario in payload["scenarios"]:
         assert isinstance(scenario, Mapping)
         lines.append(
             "| "
             + _table(f"{scenario['scenario_id']}: {scenario['scenario_title']}")
-            + (
-                f" | {'PASS' if scenario['passed'] else 'FAIL'} | "
-                f"`{_table(scenario['replay_command'])}` |"
-            )
+            + f" | {'PASS' if scenario['passed'] else 'FAIL'} |"
         )
     lines.extend(["", "| Scenario | Finding | Result |", "| --- | --- | --- |"])
     for scenario in payload["scenarios"]:
@@ -242,6 +262,16 @@ def render_markdown(report: SimulationSuiteReport) -> str:
                 f"| {_table(scenario['scenario_id'])} | {_table(finding_text)} | "
                 f"{'PASS' if finding['passed'] else 'FAIL'} |"
             )
+    lines.append("\n## Replay commands")
+    for scenario in payload["scenarios"]:
+        assert isinstance(scenario, Mapping)
+        lines.extend(
+            [
+                "",
+                f"### {_table(scenario['scenario_id'])}",
+                *_fenced_command(scenario["replay_command"]),
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -264,7 +294,7 @@ def render_junit(report: SimulationSuiteReport) -> str:
         case = ElementTree.SubElement(
             suite,
             "testcase",
-            {"classname": "csaf.simulations", "name": str(scenario["scenario_id"])},
+            {"classname": "csaf.simulations", "name": _xml_text(scenario["scenario_id"])},
         )
         run = scenario["run"]
         grade = scenario["grade"]
@@ -272,15 +302,15 @@ def render_junit(report: SimulationSuiteReport) -> str:
         if not run["success"]:
             failure_count += 1
             ElementTree.SubElement(
-                case, "failure", {"type": "execution"}
-            ).text = "simulation execution did not succeed"
+                case, "failure", {"type": _xml_text("execution")}
+            ).text = _xml_text("simulation execution did not succeed")
         for finding in grade["findings"]:
             assert isinstance(finding, Mapping)
             if not finding["passed"] and finding["code"] != "execution":
                 failure_count += 1
-                ElementTree.SubElement(case, "failure", {"type": str(finding["code"])}).text = str(
-                    finding["message"]
-                )
+                ElementTree.SubElement(
+                    case, "failure", {"type": _xml_text(finding["code"])}
+                ).text = _xml_text(finding["message"])
     suite.set("failures", str(failure_count))
     ElementTree.indent(suite, space="  ")
     return ElementTree.tostring(suite, encoding="unicode", xml_declaration=False) + "\n"

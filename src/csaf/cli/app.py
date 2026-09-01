@@ -1,7 +1,9 @@
 """Typer command-line interface for CSAF."""
 
 import json
+import os
 import shlex
+import subprocess
 import tempfile
 from functools import partial
 from pathlib import Path
@@ -114,13 +116,42 @@ def _simulation_fixture_root(dataset: Path, explicit_root: Path | None) -> Path:
     return root.resolve()
 
 
-def _replay_command(dataset: Path, scenario_id: str, seed: int, fixture_root: Path | None) -> str:
-    """Produce a stable shell-displayable replay command without report destinations."""
+def _replay_command(
+    dataset: Path,
+    scenario_id: str,
+    seed: int,
+    fixture_root: Path | None,
+    *,
+    replay_cwd: Path,
+) -> str:
+    """Render an executable replay command using vetted paths relative to the invocation cwd."""
 
-    arguments = ["csaf", "simulate", str(dataset), "--scenario", scenario_id, "--seed", str(seed)]
+    def locator(path: Path) -> str:
+        return os.path.relpath(path.resolve(), replay_cwd.resolve())
+
+    arguments = [
+        "csaf",
+        "simulate",
+        locator(dataset),
+        "--scenario",
+        scenario_id,
+        "--seed",
+        str(seed),
+    ]
     if fixture_root is not None:
-        arguments.extend(["--fixture-root", str(fixture_root)])
-    return " ".join(shlex.quote(argument) for argument in arguments)
+        arguments.extend(["--fixture-root", locator(fixture_root)])
+    return subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
+
+
+def _replay_cwd(dataset: Path) -> Path:
+    """Use the invocation cwd unless a Windows volume boundary requires the dataset parent."""
+
+    cwd = Path.cwd().resolve()
+    try:
+        os.path.relpath(dataset.resolve(), cwd)
+    except ValueError:
+        return dataset.resolve().parent
+    return cwd
 
 
 @office_app.command("doctor")
@@ -254,7 +285,11 @@ def simulate(
                         grade=grade,
                         passed=run.success and grade.passed,
                         replay_command=_replay_command(
-                            dataset, effective.id, effective.seed, fixture_root
+                            dataset,
+                            effective.id,
+                            effective.seed,
+                            fixture_root,
+                            replay_cwd=_replay_cwd(dataset),
                         ),
                     )
                 )

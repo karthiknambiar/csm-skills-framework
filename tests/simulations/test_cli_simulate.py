@@ -1,6 +1,9 @@
 """CLI coverage for deterministic simulation replay reports."""
 
 import json
+import os
+import shlex
+import subprocess
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -124,3 +127,41 @@ def test_simulate_grade_failure_exits_one_and_runtime_errors_are_sanitized(tmp_p
     unsafe = runner.invoke(app, ["simulate", str(unsafe_dataset)])
     assert unsafe.exit_code == 2
     assert "Traceback" not in unsafe.output
+
+
+def test_simulate_replay_command_is_relative_and_shell_safe(tmp_path: Path, monkeypatch) -> None:
+    dataset = tmp_path / "data set;still-safe"
+    _write_dataset(dataset, _scenario("first"))
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["simulate", str(dataset), "--report-dir", "reports"])
+
+    assert result.exit_code == 0
+    command = json.loads((tmp_path / "reports" / "simulation-report.json").read_text())[
+        "scenarios"
+    ][0]["replay_command"]
+    argv = [
+        "csaf",
+        "simulate",
+        os.path.relpath(dataset, tmp_path),
+        "--scenario",
+        "first",
+        "--seed",
+        "17",
+    ]
+    expected = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    assert command == expected
+    assert "<redacted" not in command
+
+
+def test_simulate_execution_failure_writes_reports_and_exits_one(tmp_path: Path) -> None:
+    dataset = tmp_path / "execution-failure"
+    scenario = _scenario("execution-failure")
+    scenario["steps"][0]["skill"] = "missing-skill"
+    _write_dataset(dataset, scenario)
+    report_dir = tmp_path / "execution-report"
+
+    result = runner.invoke(app, ["simulate", str(dataset), "--report-dir", str(report_dir)])
+
+    assert result.exit_code == 1
+    assert (report_dir / "simulation-report.json").exists()
