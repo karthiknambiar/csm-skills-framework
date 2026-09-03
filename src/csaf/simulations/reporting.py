@@ -293,6 +293,10 @@ def _redacted_payload(report: SimulationSuiteReport) -> dict[str, object]:
             replay_argv = report_scenario.replay_argv
             validate_replay_argv_safety(replay_argv)
             _validate_replay_argv_shape(replay_argv)
+            if replay_argv[4] != report_scenario.scenario_id or replay_argv[6] != str(
+                report_scenario.seed
+            ):
+                raise ValueError("replay argv must match scenario identity")
         except ValueError:
             raise ValueError("report replay evidence is unsafe") from None
         payload_scenario["replay_argv"] = list(replay_argv)

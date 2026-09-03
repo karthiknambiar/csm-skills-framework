@@ -298,6 +298,34 @@ def test_serializers_reject_model_copy_replay_argv_bypasses_without_echoing_them
         assert unsafe not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    ("replay_scenario", "replay_seed"),
+    [("other-scenario", 7), ("reporting-check", 8)],
+)
+def test_serializers_reject_model_copy_replay_identity_bypasses(
+    tmp_path: Path, replay_scenario: str, replay_seed: int
+) -> None:
+    report = _report(tmp_path)
+    scenario = report.scenarios[0].model_copy(
+        update={
+            "replay_argv": (
+                "csaf",
+                "simulate",
+                str(tmp_path / "scenarios"),
+                "--scenario",
+                replay_scenario,
+                "--seed",
+                str(replay_seed),
+            )
+        }
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+
+    for serializer in (canonical_json, render_markdown, render_junit):
+        with pytest.raises(ValueError, match="report replay evidence is unsafe"):
+            serializer(report)
+
+
 def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Path) -> None:
     report = _report(tmp_path)
     scenario = report.scenarios[0].model_copy(
@@ -565,7 +593,6 @@ def test_junit_replaces_invalid_xml_controls_in_attributes_and_text(tmp_path: Pa
     )
     scenario = report.scenarios[0].model_copy(
         update={
-            "scenario_id": "bad\x03id",
             "scenario_title": "bad\x04title",
             "grade": report.scenarios[0].grade.model_copy(update={"findings": (finding,)}),
         }
@@ -573,7 +600,7 @@ def test_junit_replaces_invalid_xml_controls_in_attributes_and_text(tmp_path: Pa
     report = report.model_copy(update={"scenarios": (scenario,)})
     xml = render_junit(report)
     ElementTree.fromstring(xml)
-    assert "\x01" not in xml and "\x02" not in xml and "\x03" not in xml
+    assert "\x01" not in xml and "\x02" not in xml
 
 
 def test_writer_cleans_temporary_file_when_replace_fails(
