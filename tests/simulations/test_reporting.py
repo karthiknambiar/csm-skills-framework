@@ -213,6 +213,25 @@ def test_serializers_redact_authorization_bearer_and_jwt_recursively(tmp_path: P
     assert "&lt;redacted-secret&gt;" in rendered[1]
 
 
+def test_nested_replay_argv_output_is_redacted_not_trusted_as_report_evidence(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    step = (
+        report.scenarios[0]
+        .run.steps[0]
+        .model_copy(update={"output": {"replay_argv": ["api_key=hunter2"]}})
+    )
+    scenario = report.scenarios[0].model_copy(
+        update={"run": report.scenarios[0].run.model_copy(update={"steps": (step,)})}
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+
+    rendered = (canonical_json(report).decode(), render_markdown(report), render_junit(report))
+
+    assert all("hunter2" not in value for value in rendered)
+
+
 def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Path) -> None:
     report = _report(tmp_path)
     scenario = report.scenarios[0].model_copy(
@@ -265,6 +284,42 @@ def test_scenario_report_requires_exact_replay_identity(
     report = _report(tmp_path)
     payload = report.scenarios[0].model_dump()
     payload["replay_argv"] = replay_argv
+
+    with pytest.raises(ValueError, match="replay argv"):
+        SimulationScenarioReport.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ("--help",),
+        ("--fixture-root", "fixtures", "--help"),
+        ("--fixture-root", "fixtures", "--fixture-root", "other"),
+    ],
+)
+def test_scenario_report_rejects_surplus_reordered_replay_arguments(
+    tmp_path: Path, suffix: tuple[str, ...]
+) -> None:
+    report = _report(tmp_path)
+    payload = report.scenarios[0].model_dump()
+    payload["replay_argv"] = (*payload["replay_argv"], *suffix)
+
+    with pytest.raises(ValueError, match="replay argv"):
+        SimulationScenarioReport.model_validate(payload)
+
+
+def test_scenario_report_rejects_reordered_replay_arguments(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    payload = report.scenarios[0].model_dump()
+    payload["replay_argv"] = (
+        "csaf",
+        "simulate",
+        str(tmp_path / "scenarios"),
+        "--seed",
+        "7",
+        "--scenario",
+        "reporting-check",
+    )
 
     with pytest.raises(ValueError, match="replay argv"):
         SimulationScenarioReport.model_validate(payload)
@@ -332,12 +387,107 @@ def test_canonical_json_removes_nested_artifact_payloads_with_integrity_summarie
     broken = redacted["scenarios"][0]["run"]["initial_snapshot"]["artifacts"][1]
     assert broken == {
         "filename": "broken.bin",
-        "integrity": "unavailable",
+        "integrity": "invalid",
         "media_type": "application/octet-stream",
-        "sha256": "reported-digest",
+        "sha256": None,
         "size": None,
         "type": "artifact",
     }
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        {
+            "type": "artifact",
+            "filename": "ordered.bin",
+            "media_type": "application/octet-stream",
+            "sha256": "attacker-sha",
+            "size": 999,
+            "integrity": "attacker-integrity",
+            "content": "c2VjcmV0IGFydGlmYWN0",
+        },
+        {
+            "content": "c2VjcmV0IGFydGlmYWN0",
+            "size": 999,
+            "sha256": "attacker-sha",
+            "integrity": "attacker-integrity",
+            "type": "artifact",
+            "filename": "reversed.bin",
+            "media_type": "application/octet-stream",
+        },
+    ],
+)
+def test_artifact_content_integrity_is_computed_not_supplied(
+    tmp_path: Path, artifact: dict[str, object]
+) -> None:
+    report = _report(tmp_path)
+    run = report.scenarios[0].run.model_copy(update={"artifacts": (artifact,)})
+    scenario = report.scenarios[0].model_copy(update={"run": run})
+    payload = json.loads(canonical_json(report.model_copy(update={"scenarios": (scenario,)})))
+
+    summary = payload["scenarios"][0]["run"]["artifacts"][0]
+    assert summary["sha256"] == "4036bf69a091b47f036f00a807e20af7201bccb6e2a13e418852a3fd3a8b88aa"
+    assert summary["size"] == 15
+    assert "content" not in summary
+    assert "integrity" not in summary
+
+
+def test_serializers_replace_surrogates_in_values_and_mapping_keys(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    surrogate = chr(0xD800)
+    finding = (
+        report.scenarios[0].grade.findings[0].model_copy(update={"message": "finding\ud800 ok"})
+    )
+    step = (
+        report.scenarios[0]
+        .run.steps[0]
+        .model_copy(update={"output": {"nested\ud800key": "value\ud800", "valid": "snowman ☃"}})
+    )
+    scenario = report.scenarios[0].model_copy(
+        update={
+            "scenario_title": "title\ud800 ok",
+            "run": report.scenarios[0].run.model_copy(update={"steps": (step,)}),
+            "grade": report.scenarios[0].grade.model_copy(update={"findings": (finding,)}),
+        }
+    )
+    step = step.model_copy(
+        update={
+            "output": {
+                "nested" + surrogate + "key": "value" + surrogate,
+                "valid": "snowman " + chr(0x2603),
+            }
+        }
+    )
+    scenario = scenario.model_copy(
+        update={"run": scenario.run.model_copy(update={"steps": (step,)})}
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+
+    rendered = (canonical_json(report).decode(), render_markdown(report), render_junit(report))
+
+    assert all("\ud800" not in value for value in rendered)
+    assert "nested�key" in rendered[0]
+    assert "snowman ☃" in rendered[0]
+    ElementTree.fromstring(rendered[2])
+
+
+def test_canonical_json_rejects_mapping_key_collisions_after_surrogate_replacement(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    surrogate = chr(0xD800)
+    step = report.scenarios[0].run.steps[0].model_copy(update={"output": {"placeholder": "first"}})
+    scenario = report.scenarios[0].model_copy(
+        update={"run": report.scenarios[0].run.model_copy(update={"steps": (step,)})}
+    )
+    step = step.model_copy(update={"output": {"key" + surrogate: "first", "key�": "second"}})
+    scenario = scenario.model_copy(
+        update={"run": scenario.run.model_copy(update={"steps": (step,)})}
+    )
+
+    with pytest.raises(ValueError, match="mapping keys collide"):
+        canonical_json(report.model_copy(update={"scenarios": (scenario,)}))
 
 
 def test_junit_replaces_invalid_xml_controls_in_attributes_and_text(tmp_path: Path) -> None:

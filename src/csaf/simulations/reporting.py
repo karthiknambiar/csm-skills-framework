@@ -48,6 +48,7 @@ _JWT = re.compile(
     r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?![A-Za-z0-9_-])"
 )
 _XML_INVALID = re.compile(r"[^\x09\x0A\x0D\x20-\uD7FF\uE000-\uFFFD\U00010000-\U0010FFFF]")
+_SURROGATE = re.compile(r"[\uD800-\uDFFF]")
 
 
 class _FrozenJsonDict(dict[str, object]):
@@ -125,26 +126,21 @@ class SimulationScenarioReport(BaseModel):
             raise ValueError("scenario report seeds must match")
         if self.passed is not (self.run.success and self.grade.passed):
             raise ValueError("scenario report passed must match run and grade")
-        scenario_positions = [
-            index for index, argument in enumerate(self.replay_argv) if argument == "--scenario"
-        ]
-        seed_positions = [
-            index for index, argument in enumerate(self.replay_argv) if argument == "--seed"
-        ]
-        if (
-            len(scenario_positions) != 1
-            or any(argument.startswith("--scenario=") for argument in self.replay_argv)
-            or scenario_positions[0] + 1 >= len(self.replay_argv)
-            or self.replay_argv[scenario_positions[0] + 1] != self.scenario_id
+        required = (
+            "csaf",
+            "simulate",
+            self.replay_argv[2],
+            "--scenario",
+            self.scenario_id,
+            "--seed",
+            str(self.seed),
+        )
+        optional_fixture = (*required, "--fixture-root")
+        if self.replay_argv != required and not (
+            len(self.replay_argv) == len(optional_fixture) + 1
+            and self.replay_argv[: len(optional_fixture)] == optional_fixture
         ):
-            raise ValueError("replay argv must include one matching --scenario")
-        if (
-            len(seed_positions) != 1
-            or any(argument.startswith("--seed=") for argument in self.replay_argv)
-            or seed_positions[0] + 1 >= len(self.replay_argv)
-            or self.replay_argv[seed_positions[0] + 1] != str(self.seed)
-        ):
-            raise ValueError("replay argv must include one matching --seed")
+            raise ValueError("replay argv must have exact simulate grammar")
         return self
 
 
@@ -177,7 +173,7 @@ class SimulationSuiteReport(BaseModel):
 
 
 def _redact_text(value: str) -> str:
-    redacted = redact_officecli_message(value)
+    redacted = redact_officecli_message(_sanitize_unicode(value))
     redacted = _BEARER.sub("Bearer <redacted-secret>", redacted)
     redacted = _JWT.sub("<redacted-secret>", redacted)
     return _EMAIL.sub("<redacted-email>", redacted)
@@ -189,6 +185,7 @@ def _safe_replay_argument(value: str) -> bool:
     return not (
         not value
         or _CONTROL.search(value)
+        or _SURROGATE.search(value)
         or _EMAIL.search(value)
         or _BEARER.search(value)
         or _JWT.search(value)
@@ -210,6 +207,16 @@ def _xml_text(value: object) -> str:
     return _XML_INVALID.sub("�", _redact_text(str(value)))
 
 
+def _sanitize_unicode(value: str) -> str:
+    """Replace non-scalar surrogate code points before rendering evidence."""
+
+    return _SURROGATE.sub("�", value)
+
+
+def _invalid_integrity() -> dict[str, object]:
+    return {"integrity": "invalid", "size": None, "sha256": None}
+
+
 def _content_summary(value: object) -> dict[str, object]:
     raw: bytes | None = None
     if isinstance(value, bytes):
@@ -219,35 +226,49 @@ def _content_summary(value: object) -> dict[str, object]:
             padded = value + "=" * (-len(value) % 4)
             raw = base64.b64decode(padded, altchars=b"-_", validate=True)
         except (ValueError, binascii.Error):
-            return {"integrity": "unavailable", "size": None, "sha256": None}
+            return _invalid_integrity()
     if raw is None:
-        return {"integrity": "unavailable", "size": None, "sha256": None}
+        return _invalid_integrity()
     return {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
 def _redact_value(value: object, *, key: str | None = None) -> object:
     """Build a redacted copy; this never mutates evidence or report models."""
 
-    if key == "replay_argv":
-        return list(value) if isinstance(value, tuple | list) else value
     if key is not None and _CONTENT_FIELD.fullmatch(key):
         return _content_summary(value)
     if key is not None and _SENSITIVE_FIELD.search(key):
         return "<redacted-secret>"
     if isinstance(value, BaseModel):
-        return _redact_value(value.model_dump(mode="json"))
+        return _redact_value(value.model_dump(mode="python"))
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
     if isinstance(value, Mapping):
-        result: dict[str, object] = {}
+        items: list[tuple[str, object]] = []
+        names: set[str] = set()
         for child_key, child_value in value.items():
-            name = str(child_key)
-            if _CONTENT_FIELD.fullmatch(name):
-                summary = _content_summary(child_value)
-                result.setdefault("sha256", summary["sha256"])
-                result["size"] = summary["size"]
-                if "integrity" in summary:
-                    result.setdefault("integrity", summary["integrity"])
+            name = _sanitize_unicode(str(child_key))
+            if name in names:
+                raise ValueError("report mapping keys collide after Unicode sanitization")
+            names.add(name)
+            items.append((name, child_value))
+        content_values = [
+            child_value for name, child_value in items if _CONTENT_FIELD.fullmatch(name)
+        ]
+        result: dict[str, object] = {}
+        for name, child_value in items:
+            if content_values and (
+                _CONTENT_FIELD.fullmatch(name) or name.lower() in {"sha256", "size", "integrity"}
+            ):
                 continue
             result[name] = _redact_value(child_value, key=name)
+        if content_values:
+            summary = (
+                _content_summary(content_values[0])
+                if len(content_values) == 1
+                else _invalid_integrity()
+            )
+            result.update(summary)
         return result
     if isinstance(value, tuple | list):
         return [_redact_value(item) for item in value]
@@ -257,10 +278,17 @@ def _redact_value(value: object, *, key: str | None = None) -> object:
 
 
 def _redacted_payload(report: SimulationSuiteReport) -> dict[str, object]:
-    payload = report.model_dump(mode="json")
+    payload = report.model_dump(mode="python")
     redacted = _redact_value(payload)
     if not isinstance(redacted, dict):  # Defensive guard for the serializer API.
         raise TypeError("report payload must be an object")
+    scenarios = redacted.get("scenarios")
+    if not isinstance(scenarios, list) or len(scenarios) != len(report.scenarios):
+        raise TypeError("report scenarios must be an ordered list")
+    for payload_scenario, report_scenario in zip(scenarios, report.scenarios, strict=True):
+        if not isinstance(payload_scenario, dict):
+            raise TypeError("report scenario payload must be an object")
+        payload_scenario["replay_argv"] = list(report_scenario.replay_argv)
     return redacted
 
 
