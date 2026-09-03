@@ -126,22 +126,23 @@ class SimulationScenarioReport(BaseModel):
             raise ValueError("scenario report seeds must match")
         if self.passed is not (self.run.success and self.grade.passed):
             raise ValueError("scenario report passed must match run and grade")
-        required = (
-            "csaf",
-            "simulate",
-            self.replay_argv[2],
-            "--scenario",
-            self.scenario_id,
-            "--seed",
-            str(self.seed),
-        )
-        optional_fixture = (*required, "--fixture-root")
-        if self.replay_argv != required and not (
-            len(self.replay_argv) == len(optional_fixture) + 1
-            and self.replay_argv[: len(optional_fixture)] == optional_fixture
-        ):
-            raise ValueError("replay argv must have exact simulate grammar")
+        _validate_replay_argv_shape(self.replay_argv)
+        if self.replay_argv[4] != self.scenario_id or self.replay_argv[6] != str(self.seed):
+            raise ValueError("replay argv must match scenario identity")
         return self
+
+
+def _validate_replay_argv_shape(value: tuple[str, ...]) -> None:
+    required = ("csaf", "simulate")
+    if (
+        len(value) not in {7, 9}
+        or value[:2] != required
+        or value[2].startswith("-")
+        or value[3] != "--scenario"
+        or value[5] != "--seed"
+        or (len(value) == 9 and value[7] != "--fixture-root")
+    ):
+        raise ValueError("replay argv must have exact simulate grammar")
 
 
 class SimulationSuiteReport(BaseModel):
@@ -247,7 +248,7 @@ def _redact_value(value: object, *, key: str | None = None) -> object:
         items: list[tuple[str, object]] = []
         names: set[str] = set()
         for child_key, child_value in value.items():
-            name = _sanitize_unicode(str(child_key))
+            name = _redact_text(_sanitize_unicode(str(child_key)))
             if name in names:
                 raise ValueError("report mapping keys collide after Unicode sanitization")
             names.add(name)
@@ -288,7 +289,13 @@ def _redacted_payload(report: SimulationSuiteReport) -> dict[str, object]:
     for payload_scenario, report_scenario in zip(scenarios, report.scenarios, strict=True):
         if not isinstance(payload_scenario, dict):
             raise TypeError("report scenario payload must be an object")
-        payload_scenario["replay_argv"] = list(report_scenario.replay_argv)
+        try:
+            replay_argv = report_scenario.replay_argv
+            validate_replay_argv_safety(replay_argv)
+            _validate_replay_argv_shape(replay_argv)
+        except ValueError:
+            raise ValueError("report replay evidence is unsafe") from None
+        payload_scenario["replay_argv"] = list(replay_argv)
     return redacted
 
 

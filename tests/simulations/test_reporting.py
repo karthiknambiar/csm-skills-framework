@@ -232,6 +232,72 @@ def test_nested_replay_argv_output_is_redacted_not_trusted_as_report_evidence(
     assert all("hunter2" not in value for value in rendered)
 
 
+def test_nested_secret_shaped_mapping_keys_are_redacted(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    secret = "abcdef.ghijkl.mnopqr"
+    step = (
+        report.scenarios[0]
+        .run.steps[0]
+        .model_copy(update={"output": {f"Authorization: Bearer {secret}": "present"}})
+    )
+    scenario = report.scenarios[0].model_copy(
+        update={"run": report.scenarios[0].run.model_copy(update={"steps": (step,)})}
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+
+    rendered = (canonical_json(report).decode(), render_markdown(report), render_junit(report))
+
+    assert all(secret not in value for value in rendered)
+
+
+def test_canonical_json_rejects_mapping_key_collisions_after_redaction(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    step = (
+        report.scenarios[0]
+        .run.steps[0]
+        .model_copy(
+            update={
+                "output": {
+                    "Authorization: Bearer aaaa.bbbb.cccc": "first",
+                    "Authorization: Bearer dddd.eeee.ffff": "second",
+                }
+            }
+        )
+    )
+    scenario = report.scenarios[0].model_copy(
+        update={"run": report.scenarios[0].run.model_copy(update={"steps": (step,)})}
+    )
+
+    with pytest.raises(ValueError, match="mapping keys collide"):
+        canonical_json(report.model_copy(update={"scenarios": (scenario,)}))
+
+
+def test_serializers_reject_model_copy_replay_argv_bypasses_without_echoing_them(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    unsafe = "api_key=hunter2"
+    scenario = report.scenarios[0].model_copy(
+        update={
+            "replay_argv": (
+                "csaf",
+                "simulate",
+                unsafe,
+                "--scenario",
+                "reporting-check",
+                "--seed",
+                "7",
+            )
+        }
+    )
+    report = report.model_copy(update={"scenarios": (scenario,)})
+
+    for serializer in (canonical_json, render_markdown, render_junit):
+        with pytest.raises(ValueError, match="report replay evidence is unsafe") as error:
+            serializer(report)
+        assert unsafe not in str(error.value)
+
+
 def test_markdown_escapes_table_content_and_uses_safe_replay_fence(tmp_path: Path) -> None:
     report = _report(tmp_path)
     scenario = report.scenarios[0].model_copy(
