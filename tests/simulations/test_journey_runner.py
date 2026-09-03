@@ -459,7 +459,7 @@ def test_mismatched_expected_error_restores_deterministic_id_sequence(tmp_path: 
     assert resumed == baseline
 
 
-def test_committed_expected_error_does_not_rewind_deterministic_id_sequence(
+def test_expected_error_rewinds_deterministic_id_sequence(
     tmp_path: Path,
 ) -> None:
     expected_failure = _scenario(
@@ -478,16 +478,6 @@ def test_committed_expected_error_does_not_rewind_deterministic_id_sequence(
         assert JourneyRunner(reused).run(expected_failure).success is True
         resumed = reused.runtime.runner.run("account-brief", {"customer_id": "acme"})
     with SimulationWorld.create(tmp_path / "fresh", START, 29) as fresh:
-
-        def fail_artifact(_: object) -> None:
-            raise RuntimeError("simulated artifact commit failure")
-
-        with pytest.raises(RuntimeError, match="simulated artifact commit failure"):
-            fresh.runtime.runner.run(
-                "qbr",
-                {"customer_id": "acme", "quarter": "2026-Q1"},
-                artifact_handler=fail_artifact,
-            )
         baseline = fresh.runtime.runner.run("account-brief", {"customer_id": "acme"})
 
-    assert resumed.execution_id == baseline.execution_id
+    assert resumed == baseline

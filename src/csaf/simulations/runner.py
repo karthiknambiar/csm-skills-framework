@@ -137,9 +137,11 @@ class JourneyRunner:
             try:
                 output, step_updates, step_artifacts = self._dispatch(step)
             except Exception as error:
-                after = self._snapshot()
                 error_type, error_message = self._error_details(error)
                 matched = self._matches_expected_error(step, error_type, error_message)
+                if matched:
+                    self._world._restore(checkpoint)
+                after = self._snapshot()
                 steps.append(
                     StepResult(
                         id=step_id,

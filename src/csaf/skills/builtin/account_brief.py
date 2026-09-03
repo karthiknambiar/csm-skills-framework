@@ -82,7 +82,7 @@ class AccountBriefSkill(Skill[AccountBriefInput, AccountBriefOutput]):
             MemoryKind.HEALTH,
         ),
         memory_writes=(MemoryKind.ARTIFACT,),
-        latest_memory_only=False,
+        latest_memory_only=True,
         artifacts=(ArtifactType.MARKDOWN,),
         evaluation_tests=(
             "all-statements-cited",

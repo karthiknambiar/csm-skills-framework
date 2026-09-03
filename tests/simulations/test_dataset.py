@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,7 +14,13 @@ from csaf.simulations.reporting import (
     canonical_json,
 )
 from csaf.simulations.runner import JourneyRunner
-from csaf.simulations.schema import IngestFixtureStep, RunSkillStep, SeedMemoryStep
+from csaf.simulations.schema import (
+    ClearFaultsStep,
+    IngestFixtureStep,
+    RunSkillStep,
+    SeedMemoryStep,
+    SetFaultStep,
+)
 from csaf.simulations.world import SimulationWorld
 
 DATASET = Path("evaluations/simulations")
@@ -39,6 +46,64 @@ CATALOG = {
     "corrupt-qbr-template": 304,
     "officecli-consent-recovery": 305,
 }
+FIXTURE_CATALOG = {
+    "conflicting-commitments.txt",
+    "escalated-incident.json",
+    "healthy-adoption.json",
+    "noisy-meeting.txt",
+    "support-timeout.json",
+}
+LIFECYCLE_MEMORY_KINDS = {
+    "new-customer-sparse-memory": {"artifact": 1, "profile": 1},
+    "healthy-adoption-growth": {"artifact": 1, "health": 1, "product_usage": 1},
+    "declining-usage-before-renewal": {
+        "action_item": 1,
+        "artifact": 3,
+        "meeting": 1,
+        "qbr": 1,
+        "risk": 1,
+        "timeline": 1,
+    },
+    "executive-sponsor-departure": {
+        "artifact": 1,
+        "commitment": 1,
+        "meeting": 1,
+        "risk": 1,
+        "stakeholder": 1,
+        "timeline": 1,
+    },
+    "security-review-blocking-rollout": {
+        "artifact": 3,
+        "commitment": 1,
+        "meeting": 1,
+        "qbr": 1,
+        "risk": 1,
+        "success_plan": 1,
+        "timeline": 1,
+    },
+    "escalated-support-incident": {
+        "artifact": 1,
+        "commitment": 1,
+        "meeting": 1,
+        "risk": 1,
+        "support": 1,
+        "timeline": 1,
+    },
+    "expansion-with-incomplete-evidence": {
+        "artifact": 1,
+        "meeting": 1,
+        "timeline": 1,
+    },
+    "multi-quarter-qbr-progression": {
+        "action_item": 1,
+        "artifact": 5,
+        "commitment": 1,
+        "meeting": 1,
+        "product_usage": 2,
+        "qbr": 2,
+        "timeline": 1,
+    },
+}
 
 
 def test_bundled_catalog_has_exact_approved_coverage() -> None:
@@ -62,7 +127,9 @@ def test_fixtures_are_bounded_synthetic_and_hash_verified() -> None:
     }
 
     assert manifest["schema_version"] == 1
-    assert referenced == set(entries)
+    physical = {path.name for path in FIXTURES.iterdir() if path.name != "provenance.json"}
+    assert set(entries) == physical == FIXTURE_CATALOG
+    assert referenced <= set(entries)
     for relative, entry in entries.items():
         path = FIXTURES / relative
         assert path.is_file()
@@ -78,6 +145,7 @@ def test_fixture_hashes_use_repository_stable_line_endings() -> None:
     attributes = Path(".gitattributes").read_text("utf-8")
 
     assert "evaluations/simulations/fixtures/*.json text eol=lf" in attributes
+    assert "evaluations/simulations/fixtures/*.txt text eol=lf" in attributes
 
 
 def test_journeys_encode_real_world_ordering_and_explicit_2026_time() -> None:
@@ -118,11 +186,89 @@ def test_journeys_encode_real_world_ordering_and_explicit_2026_time() -> None:
         skills = [step.skill for step in by_id[scenario_id].steps if isinstance(step, RunSkillStep)]
         assert skills.index("account-brief") < skills.index("qbr")
 
+    progression = by_id["multi-quarter-qbr-progression"]
+    progression_skills = [
+        step.skill for step in progression.steps if isinstance(step, RunSkillStep)
+    ]
+    assert progression_skills == ["meeting-copilot", "account-brief", "qbr", "qbr"]
+
+    for scenario_id, fixture in (
+        ("noisy-meeting-transcript", "noisy-meeting.txt"),
+        ("conflicting-speaker-commitments", "conflicting-commitments.txt"),
+    ):
+        meeting = next(
+            step
+            for step in by_id[scenario_id].steps
+            if isinstance(step, RunSkillStep) and step.skill == "meeting-copilot"
+        )
+        assert meeting.input["transcript"] == (FIXTURES / fixture).read_text("utf-8").rstrip("\n")
+
     retry = by_id["connector-timeout-retry"]
     ingests = [step for step in retry.steps if isinstance(step, IngestFixtureStep)]
     assert len(ingests) == 2
     assert ingests[0].expect_error == "simulated connector timeout"
     assert ingests[1].expect_error is None
+
+    fresh = by_id["fresh-evidence-overrides-stale"]
+    fresh_brief = next(
+        step
+        for step in fresh.steps
+        if isinstance(step, RunSkillStep) and step.skill == "account-brief"
+    )
+    assert fresh_brief.input == {"customer_id": "acme"}
+
+
+def test_lifecycle_journeys_have_exact_final_memory_kinds(tmp_path: Path) -> None:
+    by_id = {scenario.id: scenario for scenario in load_scenarios(DATASET)}
+
+    for scenario_id, expected in LIFECYCLE_MEMORY_KINDS.items():
+        scenario = by_id[scenario_id]
+        with SimulationWorld.create(tmp_path / scenario_id, EPOCH, scenario.seed) as world:
+            run = JourneyRunner(world, fixture_root=FIXTURES).run(scenario)
+        actual = Counter(record["kind"] for record in run.final_snapshot.memory)
+        assert actual == Counter(expected), scenario_id
+
+
+def test_officecli_consent_journey_declares_core_proxy_semantics() -> None:
+    """Core models availability; native-agent tests own real installer consent UI."""
+
+    scenario = next(
+        item for item in load_scenarios(DATASET) if item.id == "officecli-consent-recovery"
+    )
+    denied = next(step for step in scenario.steps if step.id == "denied-install")
+    approved = next(step for step in scenario.steps if step.id == "approved-install")
+    failed = next(step for step in scenario.steps if step.id == "failed-qbr")
+
+    assert "proxy" in scenario.title.casefold()
+    assert isinstance(denied, SetFaultStep) and denied.fault == "office_missing"
+    assert isinstance(approved, ClearFaultsStep)
+    assert isinstance(failed, RunSkillStep)
+    assert failed.expect_error == "QBR artifact rendering failed"
+
+
+def test_skills_never_consume_future_dated_evidence(tmp_path: Path) -> None:
+    for scenario in load_scenarios(DATASET):
+        with SimulationWorld.create(tmp_path / scenario.id, EPOCH, scenario.seed) as world:
+            run = JourneyRunner(world, fixture_root=FIXTURES).run(scenario)
+        declared = {
+            step.id or f"step-{index}": step for index, step in enumerate(scenario.steps, start=1)
+        }
+        for result in run.steps:
+            step = declared[result.id]
+            if not isinstance(step, RunSkillStep):
+                continue
+            occurred_at = step.input.get("occurred_at")
+            if isinstance(occurred_at, str):
+                assert (
+                    datetime.fromisoformat(occurred_at.replace("Z", "+00:00")) <= result.started_at
+                )
+            for record in result.before.memory:
+                record_time = record.get("occurred_at")
+                if isinstance(record_time, str):
+                    assert (
+                        datetime.fromisoformat(record_time.replace("Z", "+00:00"))
+                        <= result.started_at
+                    )
 
 
 def test_every_journey_replays_identically_and_passes(tmp_path: Path) -> None:
@@ -142,6 +288,7 @@ def test_every_journey_replays_identically_and_passes(tmp_path: Path) -> None:
                 failed_qbr = next(step for step in run.steps if step.id == "failed-qbr")
                 assert failed_qbr.before.memory == failed_qbr.after.memory
                 assert failed_qbr.before.artifacts == failed_qbr.after.artifacts
+                assert failed_qbr.before.office_requests == failed_qbr.after.office_requests
             report = SimulationScenarioReport(
                 scenario_id=scenario.id,
                 scenario_title=scenario.title,

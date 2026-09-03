@@ -2,6 +2,22 @@
   "schema_version": 1,
   "fixtures": [
     {
+      "path": "noisy-meeting.txt",
+      "sha256": "8679c7c4ae959d3c3e27988225e2bddec924fd411c2dd7fc1eb9eba7f4d87d25",
+      "source_class": "synthetic",
+      "pii_reviewed": true,
+      "reviewed_on": "2026-08-30",
+      "permitted_use": "public-ci"
+    },
+    {
+      "path": "conflicting-commitments.txt",
+      "sha256": "85effbca24a9931aa8626ff1ff30a223686a8117f94b5cd2aaea3a5a049d3fbd",
+      "source_class": "synthetic",
+      "pii_reviewed": true,
+      "reviewed_on": "2026-08-30",
+      "permitted_use": "public-ci"
+    },
+    {
       "path": "healthy-adoption.json",
       "sha256": "9474139e4a8bef8df859c301883e9f6833e2f91a55a0e552d14888efc482f31d",
       "source_class": "synthetic",
