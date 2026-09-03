@@ -100,6 +100,35 @@ def test_simulate_filter_and_seed_override_require_exact_single_selection(tmp_pa
     assert "Traceback" not in unknown.output
 
 
+@pytest.mark.parametrize(
+    "unknown_scenario",
+    ["owner@example.test", "api_key=topsecret", "aaaa.bbbb.cccc"],
+)
+def test_simulate_redacts_unknown_scenario_selection_errors(
+    tmp_path: Path, unknown_scenario: str
+) -> None:
+    dataset = tmp_path / "scenarios"
+    _write_dataset(dataset, _scenario("first"))
+    report_dir = tmp_path / "reports"
+
+    result = runner.invoke(
+        app,
+        [
+            "simulate",
+            str(dataset),
+            "--scenario",
+            unknown_scenario,
+            "--report-dir",
+            str(report_dir),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert result.output == "Error: unknown scenario id\n"
+    assert unknown_scenario not in result.output
+    assert not report_dir.exists()
+
+
 def test_simulate_grade_failure_exits_one_and_runtime_errors_are_sanitized(tmp_path: Path) -> None:
     failed_dataset = tmp_path / "failed"
     _write_dataset(

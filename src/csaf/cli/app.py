@@ -231,7 +231,7 @@ def simulate(
         scenarios_by_id = {item.id: item for item in loaded}
         unknown = next((item for item in requested if item not in scenarios_by_id), None)
         if unknown is not None:
-            raise ValueError(f"unknown scenario id: {unknown}")
+            raise ValueError("unknown scenario id")
         selected = tuple(scenarios_by_id[item] for item in requested) if requested else loaded
         if seed is not None and len(selected) != 1:
             raise ValueError("--seed requires exactly one selected scenario")
