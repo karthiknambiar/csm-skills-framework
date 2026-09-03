@@ -317,9 +317,11 @@ def _no_cross_customer_data(
     for step, customer in targets:
         if not _evidence_is_safe(step.output, customer, customers):
             return False
-        if not _aggregate_is_safe(step.updates, ((step, customer),), customers):
+        if not _aggregate_is_safe(step.updates, ((step, customer),) * len(step.updates), customers):
             return False
-        if not _artifacts_are_safe(step.artifacts, ((step, customer),), customers):
+        if not _artifacts_are_safe(
+            step.artifacts, ((step, customer),) * len(step.artifacts), customers
+        ):
             return False
     for step, customer, records, artifact_delta in additions:
         if step_id is not None and step.id != step_id:

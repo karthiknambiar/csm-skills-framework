@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "path": "healthy-adoption.json",
+      "sha256": "9474139e4a8bef8df859c301883e9f6833e2f91a55a0e552d14888efc482f31d",
+      "source_class": "synthetic",
+      "pii_reviewed": true,
+      "reviewed_on": "2026-08-30",
+      "permitted_use": "public-ci"
+    },
+    {
+      "path": "escalated-incident.json",
+      "sha256": "6d72214bd8b67329fd48ea08f9d4175447490168bbcb987126481e805e75d82b",
+      "source_class": "synthetic",
+      "pii_reviewed": true,
+      "reviewed_on": "2026-08-30",
+      "permitted_use": "public-ci"
+    },
+    {
+      "path": "support-timeout.json",
+      "sha256": "3622a32619cbca5a311361c5e100e18689773dcd1e529bc6a582af1670c6df42",
+      "source_class": "synthetic",
+      "pii_reviewed": true,
+      "reviewed_on": "2026-08-30",
+      "permitted_use": "public-ci"
+    }
+  ]
+}

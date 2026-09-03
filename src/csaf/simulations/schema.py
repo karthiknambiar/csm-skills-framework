@@ -180,6 +180,7 @@ class IngestFixtureStep(BaseModel):
     type: Literal["ingest_fixture"]
     customer_id: NonEmptyString
     fixture: NonEmptyString
+    expect_error: NonEmptyString | None = None
 
 
 SimulationStep = Annotated[

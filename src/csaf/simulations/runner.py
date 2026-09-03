@@ -160,7 +160,7 @@ class JourneyRunner:
                     break
                 continue
 
-            if isinstance(step, RunSkillStep) and step.expect_error is not None:
+            if isinstance(step, RunSkillStep | IngestFixtureStep) and step.expect_error is not None:
                 self._world._restore(checkpoint)
                 after = self._snapshot()
                 error_message = "expected error was not raised"
@@ -409,7 +409,7 @@ class JourneyRunner:
 
     @staticmethod
     def _matches_expected_error(step: object, error_type: str, error_message: str) -> bool:
-        expected = step.expect_error if isinstance(step, RunSkillStep) else None
+        expected = step.expect_error if isinstance(step, RunSkillStep | IngestFixtureStep) else None
         return expected is not None and (
             expected == error_type
             or (error_message in _MATCHABLE_ERROR_MESSAGES and expected == error_message)
