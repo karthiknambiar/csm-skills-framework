@@ -74,6 +74,12 @@ def test_fixtures_are_bounded_synthetic_and_hash_verified() -> None:
         assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]
 
 
+def test_fixture_hashes_use_repository_stable_line_endings() -> None:
+    attributes = Path(".gitattributes").read_text("utf-8")
+
+    assert "evaluations/simulations/fixtures/*.json text eol=lf" in attributes
+
+
 def test_journeys_encode_real_world_ordering_and_explicit_2026_time() -> None:
     by_id = {scenario.id: scenario for scenario in load_scenarios(DATASET)}
 
