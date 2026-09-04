@@ -3,7 +3,7 @@
 import hashlib
 import json
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from csaf.simulations.graders import DeterministicGrader
@@ -209,13 +209,38 @@ def test_journeys_encode_real_world_ordering_and_explicit_2026_time() -> None:
     assert ingests[0].expect_error == "simulated connector timeout"
     assert ingests[1].expect_error is None
 
-    fresh = by_id["fresh-evidence-overrides-stale"]
+
+def test_fresh_evidence_wins_over_stale_revision_inside_60_day_window(tmp_path: Path) -> None:
+    fresh = next(
+        scenario
+        for scenario in load_scenarios(DATASET)
+        if scenario.id == "fresh-evidence-overrides-stale"
+    )
     fresh_brief = next(
         step
         for step in fresh.steps
         if isinstance(step, RunSkillStep) and step.skill == "account-brief"
     )
-    assert fresh_brief.input == {"customer_id": "acme"}
+    assert fresh_brief.input == {"customer_id": "acme", "time_window_days": 60}
+
+    with SimulationWorld.create(tmp_path, EPOCH, fresh.seed) as world:
+        run = JourneyRunner(world, fixture_root=FIXTURES).run(fresh)
+    assert run.success
+    brief = next(step for step in run.steps if step.id == fresh_brief.id)
+    revisions = sorted(
+        (record for record in brief.before.memory if record["logical_key"] == "risk:renewal"),
+        key=lambda record: record["revision"],
+    )
+    assert [record["revision"] for record in revisions] == [1, 2]
+    since = brief.started_at - timedelta(days=fresh_brief.input["time_window_days"])
+    timestamps = [
+        datetime.fromisoformat(record["occurred_at"].replace("Z", "+00:00")) for record in revisions
+    ]
+    assert since <= timestamps[0] < timestamps[1] <= brief.started_at
+    assert len(brief.output["risks"]) == 1
+    assert brief.output["risks"][0]["text"] == "Fresh: renewal blocker resolved."
+    assert brief.output["risks"][0]["memory_record_id"] == revisions[1]["id"]
+    assert "Stale: renewal is blocked." not in json.dumps(brief.output)
 
 
 def test_lifecycle_journeys_have_exact_final_memory_kinds(tmp_path: Path) -> None:
