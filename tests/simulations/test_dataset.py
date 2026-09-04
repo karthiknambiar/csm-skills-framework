@@ -6,6 +6,10 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from csaf.memory import SQLiteMemoryStore
+from csaf.schemas import MemoryQuery, MemoryRecord
 from csaf.simulations.graders import DeterministicGrader
 from csaf.simulations.loader import load_scenarios
 from csaf.simulations.reporting import (
@@ -241,6 +245,67 @@ def test_fresh_evidence_wins_over_stale_revision_inside_60_day_window(tmp_path: 
     assert brief.output["risks"][0]["text"] == "Fresh: renewal blocker resolved."
     assert brief.output["risks"][0]["memory_record_id"] == revisions[1]["id"]
     assert "Stale: renewal is blocked." not in json.dumps(brief.output)
+
+
+def test_tenant_isolation_briefs_retrieve_after_both_meetings(tmp_path: Path) -> None:
+    scenario = next(
+        item for item in load_scenarios(DATASET) if item.id == "tenant-isolation-attack"
+    )
+    skills = [step for step in scenario.steps if isinstance(step, RunSkillStep)]
+    assert [(step.skill, step.input["customer_id"]) for step in skills] == [
+        ("meeting-copilot", "acme"),
+        ("meeting-copilot", "globex"),
+        ("account-brief", "acme"),
+        ("account-brief", "globex"),
+    ]
+    with SimulationWorld.create(tmp_path, EPOCH, scenario.seed) as world:
+        run = JourneyRunner(world, fixture_root=FIXTURES).run(scenario)
+    assert run.success
+    assert DeterministicGrader().grade(scenario, run).passed
+    for customer, other in (("acme", "globex"), ("globex", "acme")):
+        brief = next(step for step in run.steps if step.id == f"{customer}-brief")
+        assert {record["customer_id"] for record in brief.before.memory} == {"acme", "globex"}
+        assert len(brief.output["action_items"]) == 1
+        action = brief.output["action_items"][0]
+        assert action["text"] == f"Validate {customer.title()} role mappings."
+        own_ids = {
+            record["id"] for record in brief.before.memory if record["customer_id"] == customer
+        }
+        assert action["memory_record_id"] in own_ids
+        assert other not in json.dumps(brief.output).casefold()
+
+
+@pytest.mark.parametrize("mutation", ["disabled", "cross-customer"])
+def test_tenant_isolation_journey_rejects_retrieval_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    scenario = next(
+        item for item in load_scenarios(DATASET) if item.id == "tenant-isolation-attack"
+    )
+    original_search = SQLiteMemoryStore.search
+    calls = []
+
+    def mutated_search(store: SQLiteMemoryStore, query: MemoryQuery) -> list[MemoryRecord]:
+        calls.append(query.customer_id)
+        if mutation == "disabled":
+            raise AssertionError("tenant retrieval disabled")
+        other = "globex" if query.customer_id == "acme" else "acme"
+        return original_search(store, query) + original_search(
+            store, query.model_copy(update={"customer_id": other})
+        )
+
+    monkeypatch.setattr(SQLiteMemoryStore, "search", mutated_search)
+    with SimulationWorld.create(tmp_path, EPOCH, scenario.seed) as world:
+        run = JourneyRunner(world, fixture_root=FIXTURES).run(scenario)
+    grade = DeterministicGrader().grade(scenario, run)
+    assert not grade.passed
+    assert calls == (["acme"] if mutation == "disabled" else ["acme", "globex"])
+    if mutation == "cross-customer":
+        assert run.success
+        assert any(
+            finding.code == "no_cross_customer_data" and not finding.passed
+            for finding in grade.findings
+        )
 
 
 def test_lifecycle_journeys_have_exact_final_memory_kinds(tmp_path: Path) -> None:
