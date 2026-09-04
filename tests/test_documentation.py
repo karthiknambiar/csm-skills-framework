@@ -23,6 +23,7 @@ _RELEASE_TEXT_FILES = (
 def test_relative_markdown_links_resolve() -> None:
     markdown_files = [Path("README.md"), Path("CONTRIBUTING.md")]
     markdown_files.extend(sorted(Path("docs").glob("*.md")))
+    markdown_files.extend(sorted(Path("docs/testing").glob("*.md")))
     markdown_files.extend(sorted(Path("examples").glob("*.md")))
     failures: list[str] = []
     for document in markdown_files:
@@ -405,3 +406,60 @@ def test_readme_matches_runtime_lifecycle_and_bundled_evaluations() -> None:
     assert "`action_item`" in meeting
     assert "`feature_request`" in meeting
     assert "Account Brief, Meeting Copilot, and QBR regressions" in readme
+
+
+def test_simulation_guide_covers_the_current_schema_and_replay() -> None:
+    from csaf.simulations.schema import SimulationScenario
+
+    guide_path = Path("docs/testing/simulations.md")
+    assert guide_path.exists(), "The simulation contributor guide is missing"
+    guide = guide_path.read_text(encoding="utf-8")
+    schema = SimulationScenario.model_json_schema()
+    for definition in schema["$defs"].values():
+        step_type = definition.get("properties", {}).get("type", {}).get("const")
+        if step_type:
+            assert f"`{step_type}`" in guide
+    for required in (
+        "schema_version",
+        "expect_error",
+        "step_id",
+        "latest revision",
+        "provenance.json",
+        "pii_reviewed",
+        "SHA-256",
+        "synthetic",
+        "sanitized",
+        "availability proxy",
+        "native-agent harness",
+        "--scenario",
+        "--seed",
+        "--fixture-root",
+        "replay_argv",
+        "simulation-report.json",
+        "simulation-report.md",
+        "simulation-junit.xml",
+        "Exit code 0",
+        "Exit code 1",
+        "Exit code 2",
+    ):
+        assert required in guide
+    readme = Path("README.md").read_text(encoding="utf-8")
+    assert "[deterministic simulations](docs/testing/simulations.md)" in readme
+    assert "every pull request" in readme
+
+
+def test_simulation_guide_json_example_runs(tmp_path: Path) -> None:
+    from typer.testing import CliRunner
+
+    from csaf.cli.app import app
+
+    guide = Path("docs/testing/simulations.md")
+    assert guide.exists(), "The simulation contributor guide is missing"
+    examples = re.findall(r"```json\n(.*?)\n```", guide.read_text(encoding="utf-8"), re.S)
+    assert len(examples) == 1
+    scenario = tmp_path / "example.json"
+    scenario.write_text(examples[0], encoding="utf-8")
+    result = CliRunner().invoke(
+        app, ["simulate", str(scenario), "--report-dir", str(tmp_path / "reports")]
+    )
+    assert result.exit_code == 0, result.output

@@ -123,3 +123,5 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 ```
 
 On Windows, replace `.venv/bin/python` with `.\.venv\Scripts\python.exe`. See [Contributing](CONTRIBUTING.md) for the full test, lint, build, and secret-scanning workflow. Built-in Account Brief, Meeting Copilot, and QBR regressions run through the [evaluation framework](docs/evaluations.md).
+
+CI runs [deterministic simulations](docs/testing/simulations.md) on every pull request, covering customer journeys, retries, and failure recovery on Python 3.11 and 3.12.

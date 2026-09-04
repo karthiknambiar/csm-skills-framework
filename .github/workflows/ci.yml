@@ -26,6 +26,15 @@ jobs:
       - run: ruff check .
       - run: python scripts/check_secrets.py --worktree --tracked --history
       - run: python -m pytest
+      - name: Run deterministic customer journeys
+        run: csaf --database :memory: simulate evaluations/simulations --report-dir simulation-results
+      - name: Upload simulation reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: simulation-results-${{ matrix.python-version }}
+          path: simulation-results
+          retention-days: 14
       - run: csaf evaluate evaluations/golden --report evaluation-report.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
