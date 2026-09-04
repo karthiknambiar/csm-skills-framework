@@ -85,9 +85,7 @@ def test_directory_load_is_non_recursive_json_only_and_sorted_by_path(tmp_path: 
 
 
 @pytest.mark.parametrize("source_kind", ["missing", "non-json-file"])
-def test_rejects_missing_or_unsupported_input_paths(
-    tmp_path: Path, source_kind: str
-) -> None:
+def test_rejects_missing_or_unsupported_input_paths(tmp_path: Path, source_kind: str) -> None:
     source = tmp_path / "missing.json"
     if source_kind == "non-json-file":
         source = tmp_path / "scenario.txt"
@@ -158,9 +156,7 @@ def test_wraps_excessive_json_nesting_without_leaking_content(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("location", ["root", "nested"])
-def test_rejects_duplicate_json_keys_without_echoing_the_key(
-    tmp_path: Path, location: str
-) -> None:
+def test_rejects_duplicate_json_keys_without_echoing_the_key(tmp_path: Path, location: str) -> None:
     source = tmp_path / f"duplicate-{location}.json"
     secret_key = "secret-key-do-not-leak"
     if location == "root":
@@ -172,9 +168,7 @@ def test_rejects_duplicate_json_keys_without_echoing_the_key(
             '{"type":"run_skill","skill":"brief","input":'
             f'{{"customer_id":"acme","{secret_key}":1,"{secret_key}":2}}}}'
         )
-        encoded = json.dumps(payload).replace(
-            '{"type": "advance_time", "seconds": 1}', step
-        )
+        encoded = json.dumps(payload).replace('{"type": "advance_time", "seconds": 1}', step)
     source.write_text(encoded, encoding="utf-8")
 
     with pytest.raises(SimulationDatasetError, match=source.name) as caught:
@@ -299,9 +293,7 @@ def test_duplicate_id_diagnostics_do_not_echo_scenario_id(tmp_path: Path) -> Non
         r"fixtures\..\account.json",
     ],
 )
-def test_rejects_fixture_paths_outside_the_fixture_boundary(
-    tmp_path: Path, fixture: str
-) -> None:
+def test_rejects_fixture_paths_outside_the_fixture_boundary(tmp_path: Path, fixture: str) -> None:
     source = tmp_path / "unsafe.json"
     write_scenario(source, "unsafe", fixture=fixture)
 

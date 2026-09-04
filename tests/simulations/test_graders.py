@@ -111,7 +111,11 @@ def test_paths_target_steps_and_execution_failure(tmp_path):
 def test_identity_secret_and_non_finite_evidence_are_safe(tmp_path):
     scenario = _scenario([{"type": "output_equals", "path": "secret", "value": "expected"}])
     run = _run(tmp_path, scenario).model_copy(
-        update={"last_output": {"secret": "sk-" "proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"}}
+        update={
+            "last_output": {
+                "secret": "-".join(("sk", "proj", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"))
+            }
+        }
     )
     grade = DeterministicGrader().grade(scenario, run)
     assert "sk-proj" not in grade.model_dump_json()

@@ -146,7 +146,7 @@ def test_expected_error_continues_but_missing_expected_error_stops(tmp_path: Pat
 
 
 def test_unexpected_error_is_sanitized_captured_and_stops(tmp_path: Path) -> None:
-    secret = "sk-" "proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+    secret = "-".join(("sk", "proj", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"))
     scenario = _scenario(
         [
             {
@@ -347,7 +347,7 @@ def test_expected_runtime_error_from_artifact_fault_continues(tmp_path: Path) ->
 
 
 def test_expected_error_cannot_match_generic_safe_placeholder(tmp_path: Path) -> None:
-    secret = "sk-" "proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+    secret = "-".join(("sk", "proj", "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"))
     scenario = _scenario(
         [
             {

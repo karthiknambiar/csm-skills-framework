@@ -82,8 +82,10 @@ def _discover_sources(path: Path) -> tuple[Path, ...]:
             raise _dataset_error(path, "empty dataset directory", cause) from cause
         return sources
 
-    cause = FileNotFoundError("path does not exist") if not path.exists() else ValueError(
-        "path is neither a JSON file nor a directory"
+    cause = (
+        FileNotFoundError("path does not exist")
+        if not path.exists()
+        else ValueError("path is neither a JSON file nor a directory")
     )
     raise _dataset_error(path, "unsupported dataset input", cause) from cause
 
@@ -103,10 +105,10 @@ def _validation_summary(error: ValidationError) -> str:
 
     details: list[str] = []
     for item in error.errors(include_url=False, include_input=False):
-        location = ".".join(
-            _sanitize_validation_location_component(part)
-            for part in item["loc"]
-        ) or "scenario"
+        location = (
+            ".".join(_sanitize_validation_location_component(part) for part in item["loc"])
+            or "scenario"
+        )
         details.append(f"{location}: {item['type']}")
     return "; ".join(details)
 
